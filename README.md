@@ -1,9 +1,23 @@
 # gh-sandbox-proxy
 
+[日本語](README.ja.md) | English
+
 `gh-sandbox-proxy` is a drop-in-ish `gh` wrapper that runs the official GitHub
 CLI inside a disposable Docker container.
 
-The goal is practical:
+## Why
+
+Recent package supply-chain incidents have made a practical risk more visible:
+developer machines often keep GitHub CLI authentication in predictable local
+locations, and a single command can expose a usable token to a process running
+on that machine.
+
+This project does not claim to solve endpoint compromise. Its goal is narrower:
+reduce the value of the host OS as a place to harvest GitHub CLI credentials,
+while preserving the day-to-day ergonomics of `gh` as much as possible. It is a
+friction layer, not a guarantee.
+
+The design target is practical:
 
 - keep GitHub CLI auth state out of the host OS
 - make `gh auth token` return nothing useful on the host
