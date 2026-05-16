@@ -19,11 +19,19 @@ active_window_timezone: Asia/Tokyo
 active_window_start: "10:00"
 active_window_end: "19:00"
 
+# Authentication config is stored in container tmpfs and disappears when the
+# sandbox exits. The sandbox exits automatically at the configured expiry.
+auth_storage: tmpfs
+auth_tmpfs_size: 16m
+
+# Mount stable workspace ancestors instead of remounting each repository. This
+# lets repo-aware gh commands see .git without recreating the sandbox on cd.
+workspace_mounts:
+  # - ~/ghq
+  # - ~/Documents/src
+
 # Container name is suffixed with the current host user.
 container_name: gh-sandbox-proxy
-
-# Mount the current working directory at /work so git-aware gh commands can see it.
-workdir_mount: true
 
 # If a proxied command needs auth and the sandbox is not authenticated, run
 # `gh auth login --web` inside the container.

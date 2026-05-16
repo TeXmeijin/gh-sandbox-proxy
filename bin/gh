@@ -37,7 +37,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "active_window_start": "10:00",
     "active_window_end": "19:00",
     "container_name": "gh-sandbox-proxy",
-    "workdir_mount": True,
+    "auth_storage": "tmpfs",
+    "auth_tmpfs_size": "16m",
+    "workspace_mounts": [],
     "auto_auth": True,
     "auth_hostname": "github.com",
     "blocked": [
@@ -182,6 +184,29 @@ def current_expiry_seconds(started: float | None, cfg: dict[str, Any]) -> tuple[
     return ttl, str(cfg.get("ttl", ttl))
 
 
+def new_container_lifetime_seconds(cfg: dict[str, Any]) -> tuple[int, str]:
+    ttl = parse_duration(cfg.get("ttl", DEFAULT_TTL_SECONDS))
+    if not cfg.get("active_window_enabled", False):
+        return ttl, str(cfg.get("ttl", ttl))
+
+    timezone_name = str(cfg.get("active_window_timezone") or "Asia/Tokyo")
+    try:
+        tz = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise SystemExit(f"{APP}: unknown active_window_timezone {timezone_name!r}") from exc
+
+    now = datetime.now(tz)
+    start_hour, start_minute = parse_hhmm(cfg.get("active_window_start", "10:00"), "active_window_start")
+    end_hour, end_minute = parse_hhmm(cfg.get("active_window_end", "19:00"), "active_window_end")
+    window_start = now.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
+    window_end = now.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
+    if window_end <= window_start:
+        raise SystemExit(f"{APP}: active window must end after it starts")
+    if window_start <= now < window_end:
+        return max(1, int(window_end.timestamp() - now.timestamp())), f"{timezone_name} {cfg.get('active_window_start')}-{cfg.get('active_window_end')}"
+    return ttl, str(cfg.get("ttl", ttl))
+
+
 def pattern_matches(args: list[str], pattern: list[str]) -> bool:
     if len(args) < len(pattern):
         return False
@@ -251,35 +276,65 @@ def remove_auth_volume(cfg: dict[str, Any]) -> None:
     run(["docker", "volume", "rm", "-f", auth_volume_name(cfg)], check=False, capture=True)
 
 
-def mounted_workdir(name: str) -> str | None:
+def container_mount_sources(name: str) -> set[str]:
     proc = run(["docker", "inspect", "-f", "{{json .Mounts}}", name], check=False, capture=True)
     if proc.returncode != 0:
-        return None
+        return set()
     try:
         mounts = json.loads(proc.stdout)
     except json.JSONDecodeError:
-        return None
-    for mount in mounts:
-        if mount.get("Destination") == "/work":
-            return mount.get("Source")
-    return None
+        return set()
+    return {str(mount.get("Source")) for mount in mounts if mount.get("Source")}
 
 
-def mount_matches_cwd(mount_source: str | None, cwd: str) -> bool:
-    if mount_source is None:
-        return False
-    candidates = {cwd}
-    if cwd.startswith("/Users/"):
-        candidates.add(f"/host_mnt{cwd}")
-    if cwd.startswith("/Volumes/"):
-        candidates.add(f"/host_mnt{cwd}")
-    return mount_source in candidates
+def docker_source_path(host_path: Path) -> str:
+    text = str(host_path)
+    if text.startswith("/Users/") or text.startswith("/Volumes/"):
+        return f"/host_mnt{text}"
+    return text
+
+
+def configured_workspace_mounts(cfg: dict[str, Any]) -> list[Path]:
+    roots: list[Path] = []
+    for raw in cfg.get("workspace_mounts", []) or []:
+        path = Path(os.path.expandvars(os.path.expanduser(str(raw)))).resolve()
+        if path.exists() and path.is_dir():
+            roots.append(path)
+        else:
+            eprint(f"{APP}: ignoring missing workspace mount: {raw}")
+    return roots
+
+
+def mount_target(index: int, root: Path) -> str:
+    name = re.sub(r"[^a-zA-Z0-9_.-]", "-", root.name) or f"root{index}"
+    return f"/workspace/{index}-{name}"
+
+
+def container_workdir_for_cwd(cfg: dict[str, Any]) -> str | None:
+    cwd = Path.cwd().resolve()
+    best: tuple[int, Path, str] | None = None
+    for index, root in enumerate(configured_workspace_mounts(cfg)):
+        try:
+            rel = cwd.relative_to(root)
+        except ValueError:
+            continue
+        score = len(root.parts)
+        target = mount_target(index, root)
+        if best is None or score > best[0]:
+            best = (score, root, str(Path(target) / rel))
+    return best[2] if best else None
+
+
+def mounts_match_config(name: str, cfg: dict[str, Any]) -> bool:
+    sources = container_mount_sources(name)
+    for root in configured_workspace_mounts(cfg):
+        if str(root) not in sources and docker_source_path(root) not in sources:
+            return False
+    return True
 
 
 def ensure_container(cfg: dict[str, Any]) -> str:
     name = container_name(cfg)
-    mount_requested = bool(cfg.get("workdir_mount", True))
-    cwd = str(Path.cwd())
     if docker_exists(name):
         started = docker_started_at(name)
         expiry_seconds, expiry_label = current_expiry_seconds(started, cfg)
@@ -289,8 +344,8 @@ def ensure_container(cfg: dict[str, Any]) -> str:
             remove_auth_volume(cfg)
         elif not docker_running(name):
             remove_container(name)
-        elif mount_requested and not mount_matches_cwd(mounted_workdir(name), cwd):
-            eprint(f"{APP}: recreating sandbox for current directory mount")
+        elif not mounts_match_config(name, cfg):
+            eprint(f"{APP}: recreating sandbox for configured workspace mounts")
             remove_container(name)
 
     if docker_running(name):
@@ -298,32 +353,46 @@ def ensure_container(cfg: dict[str, Any]) -> str:
 
     image = str(cfg.get("image") or DEFAULT_IMAGE)
     eprint(f"{APP}: starting sandbox container {name} ({image})")
+    lifetime_seconds, expiry_label = new_container_lifetime_seconds(cfg)
+    eprint(f"{APP}: sandbox lifetime: {expiry_label}")
 
-    def start_with_mount(mount_workdir: bool) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    roots = configured_workspace_mounts(cfg)
+
+    def build_run_cmd(mount_roots: list[Path]) -> list[str]:
         cmd = [
             "docker",
             "run",
             "-d",
+            "--rm",
             "--name",
             name,
             "--label",
             CONTAINER_LABEL,
-            "-v",
-            f"{auth_volume_name(cfg)}:/root/.config/gh",
+            "--tmpfs",
+            f"/root/.config/gh:rw,noexec,nosuid,nodev,size={cfg.get('auth_tmpfs_size', '16m')}",
             "--entrypoint",
             "/bin/sh",
         ]
-        if mount_workdir:
-            cmd += ["-v", f"{cwd}:/work", "-w", "/work"]
-        cmd += [image, "-c", "sleep infinity"]
-        return run(cmd, check=False, capture=True), cmd
+        for index, root in enumerate(mount_roots):
+            cmd += ["-v", f"{root}:{mount_target(index, root)}"]
+        cmd += [image, "-c", f"sleep {lifetime_seconds}"]
+        return cmd
 
-    mount_requested = bool(cfg.get("workdir_mount", True))
-    proc, cmd = start_with_mount(mount_requested)
-    if proc.returncode != 0 and mount_requested and "mounts denied" in proc.stderr:
-        eprint(f"{APP}: current directory mount was denied by Docker Desktop; retrying without /work mount")
+    while True:
+        cmd = build_run_cmd(roots)
+        proc = run(cmd, check=False, capture=True)
+        if proc.returncode == 0:
+            break
+        match = re.search(r"The path (.+?) is not shared from the host", proc.stderr)
+        if not match:
+            break
+        denied = Path(match.group(1)).resolve()
+        new_roots = [root for root in roots if root != denied]
+        if len(new_roots) == len(roots):
+            break
+        eprint(f"{APP}: workspace mount denied by Docker Desktop; skipping {denied}")
         remove_container(name)
-        proc, cmd = start_with_mount(False)
+        roots = new_roots
 
     if proc.returncode != 0:
         raise SystemExit(
@@ -334,12 +403,14 @@ def ensure_container(cfg: dict[str, Any]) -> str:
     return name
 
 
-def docker_exec(name: str, args: list[str], *, capture: bool = False, tty: bool | None = None) -> subprocess.CompletedProcess[str]:
+def docker_exec(name: str, args: list[str], *, capture: bool = False, tty: bool | None = None, workdir: str | None = None) -> subprocess.CompletedProcess[str]:
     cmd = ["docker", "exec"]
     if tty is None:
         tty = sys.stdin.isatty() and sys.stdout.isatty()
     if tty:
         cmd.append("-it")
+    if workdir:
+        cmd += ["-w", workdir]
     cmd += [name, *args]
     return run(cmd, check=False, capture=capture)
 
@@ -372,12 +443,15 @@ def read_browser_url(name: str) -> str | None:
     return url or None
 
 
-def docker_exec_gh(name: str, args: list[str]) -> subprocess.CompletedProcess[str]:
+def docker_exec_gh(name: str, args: list[str], cfg: dict[str, Any]) -> subprocess.CompletedProcess[str]:
     prepare_browser_hook(name)
     clear_browser_url(name)
     cmd = ["docker", "exec"]
     if sys.stdin.isatty() and sys.stdout.isatty():
         cmd.append("-it")
+    workdir = container_workdir_for_cwd(cfg)
+    if workdir:
+        cmd += ["-w", workdir]
     cmd += ["-e", "BROWSER=/tmp/gh-sandbox-proxy-browser", name, "gh", *args]
     proc = run(cmd, check=False, capture=False)
     url = read_browser_url(name)
@@ -446,6 +520,8 @@ def sandbox_command(args: list[str], cfg: dict[str, Any]) -> int:
             print(f"age_seconds: {age}")
             print(f"ttl: {cfg.get('ttl')}")
             print(f"expiry_policy: {expiry_label}")
+            workdir = container_workdir_for_cwd(cfg)
+            print(f"container_workdir: {workdir or '(none; use --repo or configure workspace_mounts)'}")
         else:
             print(f"not running: {name}")
         return 0
@@ -462,6 +538,19 @@ def sandbox_command(args: list[str], cfg: dict[str, Any]) -> int:
         return proc.returncode
     if sub == "config":
         print(config_path())
+        return 0
+    if sub == "suggest-mounts":
+        candidates = [
+            Path("~/ghq").expanduser(),
+            Path("~/src").expanduser(),
+            Path("~/Documents/src").expanduser(),
+            Path.cwd().resolve(),
+        ]
+        seen: set[Path] = set()
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_dir() and candidate not in seen:
+                seen.add(candidate)
+                print(candidate)
         return 0
     print(f"{APP}: unknown sandbox command: {sub}", file=sys.stderr)
     return 2
@@ -488,7 +577,7 @@ def main() -> int:
     if needs_auth(args, cfg):
         ensure_auth(name, cfg)
 
-    proc = docker_exec_gh(name, args)
+    proc = docker_exec_gh(name, args, cfg)
     return proc.returncode
 
 

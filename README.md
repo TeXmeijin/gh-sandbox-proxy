@@ -115,8 +115,8 @@ gh auth login -h github.com --web
 ```
 
 inside the container. Follow the printed browser/device flow. The token is stored
-inside a Docker volume attached to the sandbox, not in the host GitHub CLI
-config. The volume is removed on TTL expiry or `gh sandbox cleanup`.
+inside a tmpfs mount attached to the sandbox, not in the host GitHub CLI config
+or a Docker volume. The tmpfs disappears when the sandbox container exits.
 
 ## Sandbox Controls
 
@@ -125,6 +125,7 @@ gh sandbox status
 gh sandbox cleanup
 gh sandbox build
 gh sandbox config
+gh sandbox suggest-mounts
 ```
 
 `cleanup` removes the current container immediately.
@@ -152,8 +153,12 @@ active_window_enabled: false
 active_window_timezone: Asia/Tokyo
 active_window_start: "10:00"
 active_window_end: "19:00"
+auth_storage: tmpfs
+auth_tmpfs_size: 16m
+workspace_mounts:
+  - ~/ghq
+  - ~/Documents/src
 container_name: gh-sandbox-proxy
-workdir_mount: true
 auto_auth: true
 auth_hostname: github.com
 blocked:
@@ -163,6 +168,16 @@ blocked:
 
 The YAML parser is intentionally tiny. Keep the config in the same simple shape
 as `config.example.yml`.
+
+`workspace_mounts` should contain stable ancestor directories that hold your git
+repositories. The wrapper mounts these roots once and maps the host current
+directory to the matching container path when running `gh`. This lets
+repo-aware commands read `.git`, remotes, and the current branch without
+recreating the sandbox each time you `cd` between repositories.
+
+If your current directory is not under any configured workspace mount, commands
+that depend on local git context may fail. Use `--repo OWNER/REPO` for those
+commands, or add an appropriate ancestor directory to `workspace_mounts`.
 
 To keep a sandbox for a normal workday in Japan while retaining `ttl` as the
 fallback outside that window:
@@ -175,11 +190,11 @@ active_window_start: "10:00"
 active_window_end: "19:00"
 ```
 
-This is enforced by the wrapper, not by Docker. On each invocation, the wrapper
-checks the container start time with `docker inspect`. If the container was
-created inside the current active window, it is kept until that window's end.
-Outside the window, or for containers created before the current window started,
-the fallback `ttl` applies.
+This is enforced by the wrapper and the container lifecycle, not by a Docker
+volume TTL feature. When the sandbox starts, the wrapper calculates the lifetime
+and starts the container with `--rm`, a tmpfs auth directory, and `sleep
+<seconds>` as the main process. When sleep exits, Docker removes the container
+and the tmpfs auth data disappears.
 
 ## Security Model
 
@@ -188,34 +203,19 @@ GitHub CLI token:
 
 - host `gh auth token` is blocked
 - host `gh auth status --show-token` is blocked
-- official `gh` auth files are stored only in the Docker container
-- official `gh` auth files are kept in a Docker volume for the active sandbox
-  session
-- the container and auth volume are recreated after the configured expiry policy
+- official `gh` auth files are stored only in the sandbox tmpfs
+- the container exits after the configured expiry policy
   (`ttl` by default, or the active window when enabled)
-- `gh sandbox cleanup` removes the authenticated container and auth volume
-  immediately
+- `gh sandbox cleanup` removes the authenticated container immediately
 
 This wrapper does not protect against every local threat:
 
 - Docker administrators can inspect or exec into containers
-- Docker administrators can inspect Docker volumes
 - commands run inside the container can use the active GitHub session
 - GitHub-issued OAuth tokens are not revoked automatically when a container is
   deleted
-- mounting the current working directory means container commands can read and
-  write that directory
-
-For stricter use, set `workdir_mount: false` and run commands with explicit
-`--repo OWNER/REPO` arguments where possible.
-
-On Docker Desktop for Mac, the current directory mount can fail if the path is
-not listed in Docker file sharing settings. In that case, the wrapper retries
-without mounting `/work`. Repo-local commands may then need `--repo OWNER/REPO`.
-
-When you run `gh` from a different repository, the wrapper recreates the
-container with that repository mounted at `/work` while keeping the active auth
-volume until the TTL expires.
+- mounted workspace directories can be read and written by commands running
+  inside the container
 
 ## License
 
