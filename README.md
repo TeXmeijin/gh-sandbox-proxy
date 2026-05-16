@@ -148,6 +148,10 @@ Important fields:
 ```yaml
 image: gh-sandbox-proxy:latest
 ttl: 1h
+active_window_enabled: false
+active_window_timezone: Asia/Tokyo
+active_window_start: "10:00"
+active_window_end: "19:00"
 container_name: gh-sandbox-proxy
 workdir_mount: true
 auto_auth: true
@@ -160,6 +164,23 @@ blocked:
 The YAML parser is intentionally tiny. Keep the config in the same simple shape
 as `config.example.yml`.
 
+To keep a sandbox for a normal workday in Japan while retaining `ttl` as the
+fallback outside that window:
+
+```yaml
+ttl: 1h
+active_window_enabled: true
+active_window_timezone: Asia/Tokyo
+active_window_start: "10:00"
+active_window_end: "19:00"
+```
+
+This is enforced by the wrapper, not by Docker. On each invocation, the wrapper
+checks the container start time with `docker inspect`. If the container was
+created inside the current active window, it is kept until that window's end.
+Outside the window, or for containers created before the current window started,
+the fallback `ttl` applies.
+
 ## Security Model
 
 This wrapper protects against accidentally or casually exposing a long-lived host
@@ -170,7 +191,8 @@ GitHub CLI token:
 - official `gh` auth files are stored only in the Docker container
 - official `gh` auth files are kept in a Docker volume for the active sandbox
   session
-- the container and auth volume are recreated after `ttl`, default `1h`
+- the container and auth volume are recreated after the configured expiry policy
+  (`ttl` by default, or the active window when enabled)
 - `gh sandbox cleanup` removes the authenticated container and auth volume
   immediately
 

@@ -148,6 +148,10 @@ export GH_SANDBOX_CONFIG=/path/to/config.yml
 ```yaml
 image: gh-sandbox-proxy:latest
 ttl: 1h
+active_window_enabled: false
+active_window_timezone: Asia/Tokyo
+active_window_start: "10:00"
+active_window_end: "19:00"
 container_name: gh-sandbox-proxy
 workdir_mount: true
 auto_auth: true
@@ -160,6 +164,22 @@ blocked:
 YAML parser は意図的に小さくしています。`config.example.yml` と同じ単純な
 shape で書いてください。
 
+日本時間の通常稼働時間中は sandbox を維持し、それ以外では `ttl` を使う例:
+
+```yaml
+ttl: 1h
+active_window_enabled: true
+active_window_timezone: Asia/Tokyo
+active_window_start: "10:00"
+active_window_end: "19:00"
+```
+
+これは Docker の自動期限切れ機能ではなく、wrapper 側の判定です。各 invocation
+で `docker inspect` により container の開始時刻を確認します。container が現在の
+active window 内で作られていれば、その日の window 終了まで維持します。window
+外、または現在の window 開始前に作られた container には fallback の `ttl` を
+適用します。
+
 ## Security Model
 
 この wrapper は、長期的に残る host GitHub CLI token を不用意に露出するリスクを
@@ -168,7 +188,8 @@ shape で書いてください。
 - host 側の `gh auth token` を block する
 - host 側の `gh auth status --show-token` を block する
 - 公式 `gh` の auth file を active sandbox session 用 Docker volume に置く
-- container と auth volume は `ttl` 後に作り直す。デフォルトは `1h`
+- container と auth volume は設定された expiry policy に従って作り直す。
+  デフォルトは `ttl`、有効化時は active window
 - `gh sandbox cleanup` で認証済み container と auth volume を即時削除する
 
 この wrapper が防げないものもあります。

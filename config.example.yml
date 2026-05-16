@@ -9,8 +9,15 @@
 # Local image built from Dockerfile in this repository.
 image: gh-sandbox-proxy:latest
 
-# Max lifetime for one authenticated sandbox container.
+# Fallback max lifetime for one authenticated sandbox container.
 ttl: 1h
+
+# Optional daily active window. When enabled, a sandbox created inside this
+# window is kept until the window end instead of expiring after `ttl`.
+active_window_enabled: false
+active_window_timezone: Asia/Tokyo
+active_window_start: "10:00"
+active_window_end: "19:00"
 
 # Container name is suffixed with the current host user.
 container_name: gh-sandbox-proxy

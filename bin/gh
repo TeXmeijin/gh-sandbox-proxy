@@ -20,6 +20,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 APP = "gh-sandbox-proxy"
@@ -31,6 +32,10 @@ CONTAINER_LABEL = "app=gh-sandbox-proxy"
 DEFAULT_CONFIG: dict[str, Any] = {
     "image": DEFAULT_IMAGE,
     "ttl": "1h",
+    "active_window_enabled": False,
+    "active_window_timezone": "Asia/Tokyo",
+    "active_window_start": "10:00",
+    "active_window_end": "19:00",
     "container_name": "gh-sandbox-proxy",
     "workdir_mount": True,
     "auto_auth": True,
@@ -144,6 +149,39 @@ def parse_duration(value: Any) -> int:
     return amount * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
 
 
+def parse_hhmm(value: Any, key: str) -> tuple[int, int]:
+    match = re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", str(value).strip())
+    if not match:
+        raise SystemExit(f"{APP}: invalid {key} {value!r}; use HH:MM like 10:00")
+    return int(match.group(1)), int(match.group(2))
+
+
+def current_expiry_seconds(started: float | None, cfg: dict[str, Any]) -> tuple[int, str]:
+    ttl = parse_duration(cfg.get("ttl", DEFAULT_TTL_SECONDS))
+    if not started or not cfg.get("active_window_enabled", False):
+        return ttl, str(cfg.get("ttl", ttl))
+
+    timezone_name = str(cfg.get("active_window_timezone") or "Asia/Tokyo")
+    try:
+        tz = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise SystemExit(f"{APP}: unknown active_window_timezone {timezone_name!r}") from exc
+
+    now = datetime.now(tz)
+    start_hour, start_minute = parse_hhmm(cfg.get("active_window_start", "10:00"), "active_window_start")
+    end_hour, end_minute = parse_hhmm(cfg.get("active_window_end", "19:00"), "active_window_end")
+    window_start = now.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
+    window_end = now.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
+    if window_end <= window_start:
+        raise SystemExit(f"{APP}: active window must end after it starts")
+
+    started_at = datetime.fromtimestamp(started, tz)
+    if window_start <= now < window_end and started_at >= window_start:
+        return int(window_end.timestamp() - started), f"{timezone_name} {cfg.get('active_window_start')}-{cfg.get('active_window_end')}"
+
+    return ttl, str(cfg.get("ttl", ttl))
+
+
 def pattern_matches(args: list[str], pattern: list[str]) -> bool:
     if len(args) < len(pattern):
         return False
@@ -240,13 +278,13 @@ def mount_matches_cwd(mount_source: str | None, cwd: str) -> bool:
 
 def ensure_container(cfg: dict[str, Any]) -> str:
     name = container_name(cfg)
-    ttl = parse_duration(cfg.get("ttl", DEFAULT_TTL_SECONDS))
     mount_requested = bool(cfg.get("workdir_mount", True))
     cwd = str(Path.cwd())
     if docker_exists(name):
         started = docker_started_at(name)
-        if started and time.time() - started > ttl:
-            eprint(f"{APP}: sandbox expired after {cfg.get('ttl')}; recreating container")
+        expiry_seconds, expiry_label = current_expiry_seconds(started, cfg)
+        if started and time.time() - started > expiry_seconds:
+            eprint(f"{APP}: sandbox expired after {expiry_label}; recreating container")
             remove_container(name)
             remove_auth_volume(cfg)
         elif not docker_running(name):
@@ -403,9 +441,11 @@ def sandbox_command(args: list[str], cfg: dict[str, Any]) -> int:
         if docker_running(name):
             started = docker_started_at(name)
             age = int(time.time() - started) if started else "unknown"
+            _, expiry_label = current_expiry_seconds(started, cfg)
             print(f"running: {name}")
             print(f"age_seconds: {age}")
             print(f"ttl: {cfg.get('ttl')}")
+            print(f"expiry_policy: {expiry_label}")
         else:
             print(f"not running: {name}")
         return 0
