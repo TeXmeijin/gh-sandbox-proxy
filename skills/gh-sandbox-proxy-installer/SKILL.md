@@ -10,22 +10,25 @@ developers who let Claude Code, Codex, or similar coding agents run local shell
 commands. It proxies `gh` commands into a Docker sandbox while blocking
 host-side token printing.
 
-## Default install workflow
+## Install workflow
 
 1. Locate or clone the `gh-sandbox-proxy` repository.
-2. Inspect the machine's likely repository roots and propose stable ancestor
+2. Inspect the machine's likely repository roots and choose stable ancestor
    directories for `workspace_mounts`. Prefer roots such as `~/ghq`,
    `~/Documents/src`, or another directory that contains many git repositories.
-   Do not suggest mounting `$HOME` unless the user explicitly accepts the wider
-   access.
+   Do not mount `$HOME`. If no safe shared root exists, use the current project
+   root and report the limitation.
 3. Run:
 
 ```bash
 ./install.sh
 ```
 
-4. If the user accepted workspace roots, edit
-   `~/.config/gh-sandbox-proxy/config.yml` and set:
+The installer is intentionally not configurable. It always installs the wrapper
+symlink, zsh PATH shims, builds the Docker image, and runs command-resolution
+checks.
+
+4. Edit `~/.config/gh-sandbox-proxy/config.yml` and set the selected roots:
 
 ```yaml
 workspace_mounts:
@@ -36,7 +39,8 @@ workspace_mounts:
 5. Verify:
 
 ```bash
-which gh
+type gh
+zsh -lc 'type gh; gh auth token'
 gh auth token
 gh --version
 gh sandbox status
@@ -44,7 +48,7 @@ gh sandbox status
 
 Expected:
 
-- `which gh` points to `~/.local/bin/gh` or another installed wrapper path.
+- `type gh` and `zsh -lc 'type gh'` both resolve the wrapper path.
 - `gh auth token` is blocked by `gh-sandbox-proxy`.
 - `gh --version` proxies to the official GitHub CLI inside Docker.
 - `gh sandbox status` shows a `container_workdir` when run under a configured
@@ -56,31 +60,10 @@ Use this helper to list initial candidates:
 gh sandbox suggest-mounts
 ```
 
-## Claude Code PATH issue
-
-If Claude Code or another agent still resolves `/usr/local/bin/gh` or the
-official `gh`, prefer the non-interactive zsh shim first:
-
-```bash
-./install.sh --zshenv
-```
-
-Then verify:
-
-```bash
-type gh
-zsh -lc 'type gh; gh auth status'
-gh auth status
-```
-
-If the shell still resolves the official `gh`, use the stronger fallback:
-
-```bash
-./install.sh --system-link
-```
-
-This backs up the existing `/usr/local/bin/gh` once and replaces it with a
-symlink to the wrapper.
+If `zsh -lc` resolves the official `gh`, treat the install as failed and inspect
+`~/.zshenv`, shell startup files, and the agent process environment before
+continuing. Do not leave a machine in a split state where terminal shells use the
+wrapper but coding agents use the official `gh`.
 
 ## Uninstall
 

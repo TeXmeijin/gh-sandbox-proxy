@@ -38,50 +38,20 @@ use the container-local GitHub CLI session.
 
 ## Install
 
-For most users:
+Run the installer:
 
 ```zsh
 ./install.sh
 ```
 
-Add the printed PATH line to your shell config if `~/.local/bin` is not already
-on PATH:
+The installer always performs the full coding-agent setup:
 
-```zsh
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-Open a new shell, then verify:
-
-```zsh
-which gh
-gh --help
-gh auth token
-```
-
-`which gh` should point at the installed wrapper symlink. `gh auth token` should
-be blocked by the wrapper.
-
-For Claude Code or other agents that do not reliably read shell startup files,
-install the non-interactive zsh PATH shim:
-
-```zsh
-./install.sh --zshenv
-```
-
-This adds a small marked block to `~/.zshenv` so `zsh -lc 'gh ...'` resolves the
-wrapper before Homebrew paths. The installer also runs command-resolution checks
-and warns if `zsh -lc` still resolves a different `gh`.
-
-If PATH shims are not enough, install a system-level symlink:
-
-```zsh
-./install.sh --system-link
-```
-
-This backs up the existing `/usr/local/bin/gh` once and replaces it with a
-symlink to this wrapper. The official Homebrew `gh` remains available at paths
-such as `/opt/homebrew/bin/gh`.
+- installs `~/.local/bin/gh` as a symlink to this wrapper
+- adds marked zsh PATH shims to `~/.zshenv`, `~/.zprofile`, and `~/.zshrc` so
+  both agent shells and terminal shells resolve the wrapper before Homebrew
+  paths
+- builds the Docker image
+- verifies command resolution and that `gh auth token` is blocked
 
 To uninstall:
 

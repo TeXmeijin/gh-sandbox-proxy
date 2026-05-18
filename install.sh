@@ -3,71 +3,30 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WRAPPER_BIN="$ROOT_DIR/bin/gh"
+WRAPPER_BIN_DIR="$(dirname "$WRAPPER_BIN")"
 CONFIG_SRC="$ROOT_DIR/config.example.yml"
-CONFIG_DIR="${GH_SANDBOX_CONFIG_DIR:-$HOME/.config/gh-sandbox-proxy}"
-CONFIG_FILE="${GH_SANDBOX_CONFIG:-$CONFIG_DIR/config.yml}"
-LINK_DIR="${GH_SANDBOX_LINK_DIR:-$HOME/.local/bin}"
+CONFIG_DIR="$HOME/.config/gh-sandbox-proxy"
+CONFIG_FILE="$CONFIG_DIR/config.yml"
+LINK_DIR="$HOME/.local/bin"
 LINK_PATH="$LINK_DIR/gh"
-INSTALL_SYSTEM_LINK="${GH_SANDBOX_INSTALL_SYSTEM_LINK:-0}"
-INSTALL_ZSHENV="${GH_SANDBOX_INSTALL_ZSHENV:-0}"
-SYSTEM_LINK_PATH="${GH_SANDBOX_SYSTEM_LINK_PATH:-/usr/local/bin/gh}"
-SYSTEM_BACKUP_PATH="${SYSTEM_LINK_PATH}.original-before-gh-sandbox-proxy"
-ZSHENV_PATH="${GH_SANDBOX_ZSHENV_PATH:-$HOME/.zshenv}"
-SKIP_DOCKER_BUILD="${GH_SANDBOX_SKIP_DOCKER_BUILD:-0}"
-IMAGE_NAME="${GH_SANDBOX_IMAGE:-gh-sandbox-proxy:latest}"
+ZSHENV_PATH="$HOME/.zshenv"
+ZPROFILE_PATH="$HOME/.zprofile"
+ZSHRC_PATH="$HOME/.zshrc"
+IMAGE_NAME="gh-sandbox-proxy:latest"
 
-usage() {
-  cat <<USAGE
-Usage: ./install.sh [options]
+if [[ $# -gt 0 ]]; then
+  cat >&2 <<USAGE
+Usage: ./install.sh
 
-Options:
-  --system-link       Also replace /usr/local/bin/gh with a symlink to this wrapper.
-                      The existing file is backed up once.
-  --zshenv            Add a minimal PATH priority block to ~/.zshenv for
-                      non-interactive zsh shells such as Codex/Claude Code.
-  --skip-docker-build Do not build the Docker image.
-  --link-dir DIR      Install gh symlink into DIR. Default: ~/.local/bin
-  --help              Show this help.
-
-Environment:
-  GH_SANDBOX_LINK_DIR=/path
-  GH_SANDBOX_INSTALL_SYSTEM_LINK=1
-  GH_SANDBOX_INSTALL_ZSHENV=1
-  GH_SANDBOX_ZSHENV_PATH=/path/to/.zshenv
-  GH_SANDBOX_SKIP_DOCKER_BUILD=1
-  GH_SANDBOX_IMAGE=gh-sandbox-proxy:latest
+This installer is intentionally opinionated for Claude Code, Codex, and similar
+coding-agent users. It always:
+  - installs the gh wrapper symlink into ~/.local/bin
+  - adds zsh PATH shims to ~/.zshenv, ~/.zprofile, and ~/.zshrc
+  - builds the Docker image
+  - verifies command resolution for interactive and non-interactive shells
 USAGE
-}
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --system-link)
-      INSTALL_SYSTEM_LINK=1
-      ;;
-    --zshenv)
-      INSTALL_ZSHENV=1
-      ;;
-    --skip-docker-build)
-      SKIP_DOCKER_BUILD=1
-      ;;
-    --link-dir)
-      shift
-      [[ $# -gt 0 ]] || { echo "missing value for --link-dir" >&2; exit 2; }
-      LINK_DIR="$1"
-      LINK_PATH="$LINK_DIR/gh"
-      ;;
-    --help|-h)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "unknown option: $1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-  shift
-done
+  exit 2
+fi
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -76,29 +35,24 @@ require_cmd() {
   fi
 }
 
-require_cmd docker
-require_cmd python3
-
-install_zshenv_block() {
-  local wrapper_bin_dir="$1"
-  local target="$2"
-  mkdir -p "$(dirname "$target")"
-  touch "$target"
-  WRAPPER_BIN_DIR="$wrapper_bin_dir" ZSHENV_TARGET="$target" python3 - <<'PY'
+install_zsh_path_block() {
+  local target_file="$1"
+  mkdir -p "$(dirname "$target_file")"
+  touch "$target_file"
+  WRAPPER_BIN_DIR="$WRAPPER_BIN_DIR" ZSH_TARGET="$target_file" python3 - <<'PY'
 import os
 from pathlib import Path
 
-target = Path(os.environ["ZSHENV_TARGET"])
+target = Path(os.environ["ZSH_TARGET"])
 wrapper_bin_dir = os.environ["WRAPPER_BIN_DIR"]
 begin = "# >>> gh-sandbox-proxy PATH >>>"
 end = "# <<< gh-sandbox-proxy PATH <<<"
 block = f"""{begin}
-# Ensure non-interactive zsh shells use the token-hiding GitHub CLI proxy.
+# Ensure coding-agent shells use gh-sandbox-proxy before Homebrew gh.
 _gh_wrapper_bin={wrapper_bin_dir!r}
-if [[ -d "$_gh_wrapper_bin" && ":$PATH:" != *":$_gh_wrapper_bin:"* ]]; then
-  export PATH="$_gh_wrapper_bin:$PATH"
-elif [[ -d "$_gh_wrapper_bin" ]]; then
-  export PATH="$_gh_wrapper_bin:${{PATH//$_gh_wrapper_bin:/}}"
+if [[ -d "$_gh_wrapper_bin" ]]; then
+  path=("$_gh_wrapper_bin" "${{(@)path:#$_gh_wrapper_bin}}")
+  export PATH
 fi
 unset _gh_wrapper_bin
 {end}
@@ -113,25 +67,40 @@ else:
     text = text.rstrip() + "\n\n" + block if text.strip() else block
 target.write_text(text)
 PY
-  echo "installed zshenv PATH shim: $target"
+  echo "installed zsh PATH shim: $target_file"
 }
 
 verify_resolution() {
-  local expected="$1"
+  local resolved
+
   echo
   echo "Verify command resolution:"
-  PATH="$LINK_DIR:$PATH" sh -c 'type gh' || true
+
+  PATH="$LINK_DIR:$PATH" sh -c 'type gh'
+
   if command -v zsh >/dev/null 2>&1; then
-    zsh -lc 'type gh' || true
-  fi
-  if command -v zsh >/dev/null 2>&1; then
+    zsh -lc 'type gh'
     resolved="$(zsh -lc 'command -v gh' 2>/dev/null || true)"
-    if [[ "$resolved" != "$expected" ]]; then
-      echo "warning: zsh -lc resolves gh to: ${resolved:-not found}" >&2
-      echo "         use ./install.sh --zshenv for non-interactive zsh shells." >&2
+    if [[ "$resolved" != "$WRAPPER_BIN" ]]; then
+      echo "error: zsh -lc resolves gh to ${resolved:-not found}, expected $WRAPPER_BIN" >&2
+      exit 1
     fi
+    if zsh -lc 'gh auth token' >/tmp/gh-sandbox-proxy-token-check.out 2>&1; then
+      cat /tmp/gh-sandbox-proxy-token-check.out >&2
+      echo "error: gh auth token was not blocked" >&2
+      exit 1
+    fi
+    if ! grep -q "blocked: this wrapper never exposes GitHub auth tokens" /tmp/gh-sandbox-proxy-token-check.out; then
+      cat /tmp/gh-sandbox-proxy-token-check.out >&2
+      echo "error: gh auth token did not appear to be handled by gh-sandbox-proxy" >&2
+      exit 1
+    fi
+    rm -f /tmp/gh-sandbox-proxy-token-check.out
   fi
 }
+
+require_cmd docker
+require_cmd python3
 
 chmod +x "$WRAPPER_BIN"
 
@@ -147,48 +116,24 @@ mkdir -p "$LINK_DIR"
 ln -sfn "$WRAPPER_BIN" "$LINK_PATH"
 echo "installed user gh symlink: $LINK_PATH -> $WRAPPER_BIN"
 
-if [[ "$SKIP_DOCKER_BUILD" != "1" ]]; then
-  docker build -t "$IMAGE_NAME" "$ROOT_DIR"
-fi
+install_zsh_path_block "$ZSHENV_PATH"
+install_zsh_path_block "$ZPROFILE_PATH"
+install_zsh_path_block "$ZSHRC_PATH"
 
-if [[ "$INSTALL_SYSTEM_LINK" == "1" ]]; then
-  if [[ -e "$SYSTEM_LINK_PATH" || -L "$SYSTEM_LINK_PATH" ]]; then
-    current_target="$(readlink "$SYSTEM_LINK_PATH" 2>/dev/null || true)"
-    if [[ "$current_target" != "$WRAPPER_BIN" ]]; then
-      if [[ ! -e "$SYSTEM_BACKUP_PATH" && ! -L "$SYSTEM_BACKUP_PATH" ]]; then
-        mv "$SYSTEM_LINK_PATH" "$SYSTEM_BACKUP_PATH"
-        echo "backed up original gh: $SYSTEM_BACKUP_PATH"
-      else
-        rm -f "$SYSTEM_LINK_PATH"
-        echo "removed existing $SYSTEM_LINK_PATH; backup already exists at $SYSTEM_BACKUP_PATH"
-      fi
-    fi
-  fi
-  ln -sfn "$WRAPPER_BIN" "$SYSTEM_LINK_PATH"
-  echo "installed system gh symlink: $SYSTEM_LINK_PATH -> $WRAPPER_BIN"
-fi
+docker build -t "$IMAGE_NAME" "$ROOT_DIR"
 
-if [[ "$INSTALL_ZSHENV" == "1" ]]; then
-  install_zshenv_block "$(dirname "$WRAPPER_BIN")" "$ZSHENV_PATH"
-fi
-
-verify_resolution "$WRAPPER_BIN"
+verify_resolution
 
 cat <<NEXT
 
 Install complete.
 
-Recommended shell setup:
-  export PATH="$LINK_DIR:\$PATH"
-
-Verify:
-  which gh
+Verification commands:
+  type gh
+  zsh -lc 'type gh; gh auth token'
   gh auth token
-  gh --version
 
-If Claude Code or another agent ignores shell startup files, rerun with:
-  ./install.sh --zshenv
-
-If PATH shims are not enough, use the stronger fallback:
-  ./install.sh --system-link
+Expected:
+  - all command resolution points to $WRAPPER_BIN
+  - gh auth token is blocked by gh-sandbox-proxy
 NEXT

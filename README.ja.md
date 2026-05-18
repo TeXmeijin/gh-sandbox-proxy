@@ -39,51 +39,20 @@ container-local の GitHub CLI session を利用できます。
 
 ## インストール
 
-通常は次を実行します。
+installer を実行します。
 
 ```zsh
 ./install.sh
 ```
 
-`~/.local/bin` が PATH に入っていない場合は、表示された PATH 設定を shell
-config に追加してください。
+installer は coding-agent 向け setup を必ずすべて実行します。
 
-```zsh
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-新しい shell を開いて確認します。
-
-```zsh
-which gh
-gh --help
-gh auth token
-```
-
-`which gh` は install された wrapper symlink を指すはずです。
-`gh auth token` は wrapper によって block されます。
-
-Claude Code など、shell startup file を安定して読まない agent では、
-非対話 zsh 向け PATH shim を入れます。
-
-```zsh
-./install.sh --zshenv
-```
-
-これは `~/.zshenv` に marker 付きの小さな block を追加し、`zsh -lc 'gh ...'`
-でも Homebrew path より先に wrapper が解決されるようにします。installer は
-command resolution check も実行し、`zsh -lc` が別の `gh` を解決する場合は
-warning を出します。
-
-PATH shim だけで足りない場合は、system-level symlink を使います。
-
-```zsh
-./install.sh --system-link
-```
-
-これは既存の `/usr/local/bin/gh` を一度だけ backup し、この wrapper への
-symlink に置き換えます。Homebrew の公式 `gh` は `/opt/homebrew/bin/gh`
-などに残ります。
+- `~/.local/bin/gh` をこの wrapper への symlink として install する
+- agent shell と terminal shell の両方で Homebrew path より先に wrapper が解決
+  されるよう、`~/.zshenv`、`~/.zprofile`、`~/.zshrc` に marker 付き zsh PATH
+  shim を追加する
+- Docker image を build する
+- command resolution と `gh auth token` が block されることを検証する
 
 uninstall は次です。
 
