@@ -12,23 +12,49 @@ host-side token printing.
 
 ## Install workflow
 
+Do not start by running `./install.sh`. This skill should make setup
+interactive because it changes shell startup files, symlinks, Docker images,
+and sandbox mount configuration.
+
 1. Locate or clone the `gh-sandbox-proxy` repository.
-2. Inspect the machine's likely repository roots and choose stable ancestor
-   directories for `workspace_mounts`. Prefer roots such as `~/ghq`,
-   `~/Documents/src`, or another directory that contains many git repositories.
-   Do not mount `$HOME`. If no safe shared root exists, use the current project
-   root and report the limitation.
-3. Run:
+2. Inspect the current machine without making changes:
+
+```bash
+pwd
+command -v gh || true
+type gh || true
+test -f ~/.zshenv && grep -n "gh-sandbox-proxy\\|gh wrapper\\|\\.local/bin" ~/.zshenv || true
+gh sandbox suggest-mounts 2>/dev/null || true
+```
+
+3. Inspect likely repository roots and choose stable ancestor directories for
+   `workspace_mounts`. Prefer roots such as `~/ghq`, `~/Documents/src`, or
+   another directory that contains many git repositories. Do not mount `$HOME`.
+   If no safe shared root exists, propose the current project root and explain
+   the limitation.
+4. Present a short setup proposal before editing anything. Include:
+
+- Exact files that will be changed, usually `~/.zshenv` and
+  `~/.config/gh-sandbox-proxy/config.yml`
+- Exact symlink that will be created, usually `~/.local/bin/gh`
+- Docker image/container/volume names that may be created
+- Proposed `workspace_mounts`
+- Verification commands that will be run
+
+Ask for explicit approval before running the installer or editing files.
+
+5. After approval, run:
 
 ```bash
 ./install.sh
 ```
 
-The installer is intentionally not configurable. It always installs the wrapper
-symlink, a zshenv PATH shim, builds the Docker image, and runs
-command-resolution checks.
+The installer is a low-level execution helper. It installs the wrapper symlink,
+a zshenv PATH shim, builds the Docker image, and runs command-resolution checks.
+Do not treat it as the whole setup experience; the skill is responsible for
+previewing and confirming the changes first.
 
-4. Edit `~/.config/gh-sandbox-proxy/config.yml` and set the selected roots:
+6. Edit `~/.config/gh-sandbox-proxy/config.yml` and set the approved roots:
 
 ```yaml
 workspace_mounts:
@@ -36,7 +62,7 @@ workspace_mounts:
   - ~/Documents/src
 ```
 
-5. Verify:
+7. Verify:
 
 ```bash
 type gh

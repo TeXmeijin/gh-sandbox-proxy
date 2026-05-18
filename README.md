@@ -44,7 +44,8 @@ Run the installer:
 ./install.sh
 ```
 
-The installer always performs the full coding-agent setup:
+`install.sh` is a low-level execution helper. If you run it directly, review the
+changes it will make first:
 
 - installs `~/.local/bin/gh` as a symlink to this wrapper
 - adds a marked zsh PATH shim to `~/.zshenv` so non-interactive Claude Code,
@@ -69,10 +70,11 @@ skills/gh-sandbox-proxy-installer/SKILL.md
 
 Use it when asking an agent to install, verify, troubleshoot PATH issues, or
 uninstall the wrapper on another machine. The Skill delegates the actual machine
-changes to `install.sh` / `uninstall.sh`, so human and agent installs follow the
-same deterministic path. This is the recommended setup route when installing
-for Claude Code or Codex users because the agent can inspect local repository
-roots and propose `workspace_mounts`.
+changes to `install.sh` / `uninstall.sh`, but it should not run them
+immediately. This is the recommended setup route when installing for Claude Code
+or Codex users because the agent first inspects shell startup files, existing
+`gh` resolution, and repository root candidates, then asks for approval with the
+exact files, symlink, Docker resources, and `workspace_mounts` it plans to use.
 
 ## Usage
 

@@ -45,7 +45,8 @@ installer を実行します。
 ./install.sh
 ```
 
-installer は coding-agent 向け setup を必ずすべて実行します。
+`install.sh` は低レベルの実行 helper です。手元で直接実行する場合は、次の変更が
+入ることを理解してから実行してください。
 
 - `~/.local/bin/gh` をこの wrapper への symlink として install する
 - Claude Code、Codex などの非対話 zsh で Homebrew path より先に wrapper が
@@ -69,9 +70,10 @@ skills/gh-sandbox-proxy-installer/SKILL.md
 
 別の machine で agent に install、verify、PATH 問題の調査、uninstall を
 任せる場合に使えます。実際の machine 変更は `install.sh` / `uninstall.sh`
-に集約しているため、人間が実行しても agent が実行しても同じ手順になります。
-Claude Code や Codex 利用者向けには、この Skill 経由の setup が推奨です。
-agent が local repository root を調べ、`workspace_mounts` の候補を提案できます。
+に集約していますが、Skill はそれらを即実行しません。Claude Code や Codex
+利用者向けには、この Skill 経由の setup が推奨です。agent は最初に shell
+startup file、既存の `gh` 解決先、repository root 候補を調べ、書き込む file、
+作る symlink、Docker resource、`workspace_mounts` を提示してから承認を取ります。
 
 ## 使い方
 
