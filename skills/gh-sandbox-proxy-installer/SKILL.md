@@ -57,14 +57,28 @@ gh sandbox suggest-mounts
 ## Claude Code PATH issue
 
 If Claude Code or another agent still resolves `/usr/local/bin/gh` or the
-official `gh`, run:
+official `gh`, prefer the non-interactive zsh shim first:
+
+```bash
+./install.sh --zshenv
+```
+
+Then verify:
+
+```bash
+type gh
+zsh -lc 'type gh; gh auth status'
+gh auth status
+```
+
+If the shell still resolves the official `gh`, use the stronger fallback:
 
 ```bash
 ./install.sh --system-link
 ```
 
 This backs up the existing `/usr/local/bin/gh` once and replaces it with a
-symlink to the wrapper. Use this when shell startup files are not reliably read.
+symlink to the wrapper.
 
 ## Uninstall
 

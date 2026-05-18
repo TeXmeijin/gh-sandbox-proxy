@@ -9,8 +9,10 @@ CONFIG_FILE="${GH_SANDBOX_CONFIG:-$CONFIG_DIR/config.yml}"
 LINK_DIR="${GH_SANDBOX_LINK_DIR:-$HOME/.local/bin}"
 LINK_PATH="$LINK_DIR/gh"
 INSTALL_SYSTEM_LINK="${GH_SANDBOX_INSTALL_SYSTEM_LINK:-0}"
+INSTALL_ZSHENV="${GH_SANDBOX_INSTALL_ZSHENV:-0}"
 SYSTEM_LINK_PATH="${GH_SANDBOX_SYSTEM_LINK_PATH:-/usr/local/bin/gh}"
 SYSTEM_BACKUP_PATH="${SYSTEM_LINK_PATH}.original-before-gh-sandbox-proxy"
+ZSHENV_PATH="${GH_SANDBOX_ZSHENV_PATH:-$HOME/.zshenv}"
 SKIP_DOCKER_BUILD="${GH_SANDBOX_SKIP_DOCKER_BUILD:-0}"
 IMAGE_NAME="${GH_SANDBOX_IMAGE:-gh-sandbox-proxy:latest}"
 
@@ -21,6 +23,8 @@ Usage: ./install.sh [options]
 Options:
   --system-link       Also replace /usr/local/bin/gh with a symlink to this wrapper.
                       The existing file is backed up once.
+  --zshenv            Add a minimal PATH priority block to ~/.zshenv for
+                      non-interactive zsh shells such as Codex/Claude Code.
   --skip-docker-build Do not build the Docker image.
   --link-dir DIR      Install gh symlink into DIR. Default: ~/.local/bin
   --help              Show this help.
@@ -28,6 +32,8 @@ Options:
 Environment:
   GH_SANDBOX_LINK_DIR=/path
   GH_SANDBOX_INSTALL_SYSTEM_LINK=1
+  GH_SANDBOX_INSTALL_ZSHENV=1
+  GH_SANDBOX_ZSHENV_PATH=/path/to/.zshenv
   GH_SANDBOX_SKIP_DOCKER_BUILD=1
   GH_SANDBOX_IMAGE=gh-sandbox-proxy:latest
 USAGE
@@ -37,6 +43,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --system-link)
       INSTALL_SYSTEM_LINK=1
+      ;;
+    --zshenv)
+      INSTALL_ZSHENV=1
       ;;
     --skip-docker-build)
       SKIP_DOCKER_BUILD=1
@@ -69,6 +78,60 @@ require_cmd() {
 
 require_cmd docker
 require_cmd python3
+
+install_zshenv_block() {
+  local wrapper_bin_dir="$1"
+  local target="$2"
+  mkdir -p "$(dirname "$target")"
+  touch "$target"
+  WRAPPER_BIN_DIR="$wrapper_bin_dir" ZSHENV_TARGET="$target" python3 - <<'PY'
+import os
+from pathlib import Path
+
+target = Path(os.environ["ZSHENV_TARGET"])
+wrapper_bin_dir = os.environ["WRAPPER_BIN_DIR"]
+begin = "# >>> gh-sandbox-proxy PATH >>>"
+end = "# <<< gh-sandbox-proxy PATH <<<"
+block = f"""{begin}
+# Ensure non-interactive zsh shells use the token-hiding GitHub CLI proxy.
+_gh_wrapper_bin={wrapper_bin_dir!r}
+if [[ -d "$_gh_wrapper_bin" && ":$PATH:" != *":$_gh_wrapper_bin:"* ]]; then
+  export PATH="$_gh_wrapper_bin:$PATH"
+elif [[ -d "$_gh_wrapper_bin" ]]; then
+  export PATH="$_gh_wrapper_bin:${{PATH//$_gh_wrapper_bin:/}}"
+fi
+unset _gh_wrapper_bin
+{end}
+"""
+
+text = target.read_text() if target.exists() else ""
+if begin in text and end in text:
+    before, rest = text.split(begin, 1)
+    _, after = rest.split(end, 1)
+    text = before.rstrip() + "\n\n" + block + after
+else:
+    text = text.rstrip() + "\n\n" + block if text.strip() else block
+target.write_text(text)
+PY
+  echo "installed zshenv PATH shim: $target"
+}
+
+verify_resolution() {
+  local expected="$1"
+  echo
+  echo "Verify command resolution:"
+  PATH="$LINK_DIR:$PATH" sh -c 'type gh' || true
+  if command -v zsh >/dev/null 2>&1; then
+    zsh -lc 'type gh' || true
+  fi
+  if command -v zsh >/dev/null 2>&1; then
+    resolved="$(zsh -lc 'command -v gh' 2>/dev/null || true)"
+    if [[ "$resolved" != "$expected" ]]; then
+      echo "warning: zsh -lc resolves gh to: ${resolved:-not found}" >&2
+      echo "         use ./install.sh --zshenv for non-interactive zsh shells." >&2
+    fi
+  fi
+}
 
 chmod +x "$WRAPPER_BIN"
 
@@ -105,6 +168,12 @@ if [[ "$INSTALL_SYSTEM_LINK" == "1" ]]; then
   echo "installed system gh symlink: $SYSTEM_LINK_PATH -> $WRAPPER_BIN"
 fi
 
+if [[ "$INSTALL_ZSHENV" == "1" ]]; then
+  install_zshenv_block "$(dirname "$WRAPPER_BIN")" "$ZSHENV_PATH"
+fi
+
+verify_resolution "$WRAPPER_BIN"
+
 cat <<NEXT
 
 Install complete.
@@ -118,5 +187,8 @@ Verify:
   gh --version
 
 If Claude Code or another agent ignores shell startup files, rerun with:
+  ./install.sh --zshenv
+
+If PATH shims are not enough, use the stronger fallback:
   ./install.sh --system-link
 NEXT

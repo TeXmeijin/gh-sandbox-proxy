@@ -59,7 +59,18 @@ gh auth token
 `gh auth token` は wrapper によって block されます。
 
 Claude Code など、shell startup file を安定して読まない agent では、
-system-level symlink を使います。
+非対話 zsh 向け PATH shim を入れます。
+
+```zsh
+./install.sh --zshenv
+```
+
+これは `~/.zshenv` に marker 付きの小さな block を追加し、`zsh -lc 'gh ...'`
+でも Homebrew path より先に wrapper が解決されるようにします。installer は
+command resolution check も実行し、`zsh -lc` が別の `gh` を解決する場合は
+warning を出します。
+
+PATH shim だけで足りない場合は、system-level symlink を使います。
 
 ```zsh
 ./install.sh --system-link
