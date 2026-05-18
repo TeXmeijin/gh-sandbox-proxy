@@ -47,8 +47,8 @@ Run the installer:
 The installer always performs the full coding-agent setup:
 
 - installs `~/.local/bin/gh` as a symlink to this wrapper
-- adds marked zsh PATH shims to `~/.zshenv`, `~/.zprofile`, and `~/.zshrc` so
-  both agent shells and terminal shells resolve the wrapper before Homebrew
+- adds a marked zsh PATH shim to `~/.zshenv` so non-interactive Claude Code,
+  Codex, and similar coding-agent shells resolve the wrapper before Homebrew
   paths
 - builds the Docker image
 - verifies command resolution and that `gh auth token` is blocked

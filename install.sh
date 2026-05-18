@@ -10,8 +10,6 @@ CONFIG_FILE="$CONFIG_DIR/config.yml"
 LINK_DIR="$HOME/.local/bin"
 LINK_PATH="$LINK_DIR/gh"
 ZSHENV_PATH="$HOME/.zshenv"
-ZPROFILE_PATH="$HOME/.zprofile"
-ZSHRC_PATH="$HOME/.zshrc"
 IMAGE_NAME="gh-sandbox-proxy:latest"
 
 if [[ $# -gt 0 ]]; then
@@ -21,9 +19,9 @@ Usage: ./install.sh
 This installer is intentionally opinionated for Claude Code, Codex, and similar
 coding-agent users. It always:
   - installs the gh wrapper symlink into ~/.local/bin
-  - adds zsh PATH shims to ~/.zshenv, ~/.zprofile, and ~/.zshrc
+  - adds a zsh PATH shim to ~/.zshenv
   - builds the Docker image
-  - verifies command resolution for interactive and non-interactive shells
+  - verifies command resolution for non-interactive zsh shells
 USAGE
   exit 2
 fi
@@ -117,8 +115,6 @@ ln -sfn "$WRAPPER_BIN" "$LINK_PATH"
 echo "installed user gh symlink: $LINK_PATH -> $WRAPPER_BIN"
 
 install_zsh_path_block "$ZSHENV_PATH"
-install_zsh_path_block "$ZPROFILE_PATH"
-install_zsh_path_block "$ZSHRC_PATH"
 
 docker build -t "$IMAGE_NAME" "$ROOT_DIR"
 

@@ -48,9 +48,8 @@ installer を実行します。
 installer は coding-agent 向け setup を必ずすべて実行します。
 
 - `~/.local/bin/gh` をこの wrapper への symlink として install する
-- agent shell と terminal shell の両方で Homebrew path より先に wrapper が解決
-  されるよう、`~/.zshenv`、`~/.zprofile`、`~/.zshrc` に marker 付き zsh PATH
-  shim を追加する
+- Claude Code、Codex などの非対話 zsh で Homebrew path より先に wrapper が
+  解決されるよう、`~/.zshenv` に marker 付き zsh PATH shim を追加する
 - Docker image を build する
 - command resolution と `gh auth token` が block されることを検証する
 

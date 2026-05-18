@@ -25,8 +25,8 @@ host-side token printing.
 ```
 
 The installer is intentionally not configurable. It always installs the wrapper
-symlink, zsh PATH shims, builds the Docker image, and runs command-resolution
-checks.
+symlink, a zshenv PATH shim, builds the Docker image, and runs
+command-resolution checks.
 
 4. Edit `~/.config/gh-sandbox-proxy/config.yml` and set the selected roots:
 
