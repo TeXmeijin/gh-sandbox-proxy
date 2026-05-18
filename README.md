@@ -5,12 +5,17 @@
 `gh-sandbox-proxy` is a drop-in-ish `gh` wrapper that runs the official GitHub
 CLI inside a disposable Docker container.
 
+It is primarily for developers who let coding agents such as Claude Code,
+Codex, or similar tools run local shell commands. The aim is to keep day-to-day
+`gh` workflows usable while making host-side GitHub CLI token harvesting less
+straightforward for automated or opportunistic processes.
+
 ## Why
 
 Recent package supply-chain incidents have made a practical risk more visible:
-developer machines often keep GitHub CLI authentication in predictable local
-locations, and a single command can expose a usable token to a process running
-on that machine.
+developer machines, especially agent-assisted ones, often keep GitHub CLI
+authentication in predictable local locations, and a single command can expose a
+usable token to a process running on that machine.
 
 This project does not claim to solve endpoint compromise. Its goal is narrower:
 reduce the value of the host OS as a place to harvest GitHub CLI credentials,
@@ -95,7 +100,9 @@ skills/gh-sandbox-proxy-installer/SKILL.md
 Use it when asking an agent to install, verify, troubleshoot PATH issues, or
 uninstall the wrapper on another machine. The Skill delegates the actual machine
 changes to `install.sh` / `uninstall.sh`, so human and agent installs follow the
-same deterministic path.
+same deterministic path. This is the recommended setup route when installing
+for Claude Code or Codex users because the agent can inspect local repository
+roots and propose `workspace_mounts`.
 
 ## Usage
 

@@ -5,10 +5,15 @@
 `gh-sandbox-proxy` は、公式 GitHub CLI (`gh`) を使い捨ての Docker
 コンテナ内で実行する、`gh` 互換寄りの wrapper です。
 
+主な対象は、Claude Code、Codex、または類似の coding agent にローカル shell
+command を実行させている開発者です。普段の `gh` workflow の利便性をできるだけ
+維持しつつ、host 側の GitHub CLI token が自動化された process や便乗的な
+process に回収される難度を上げることを狙っています。
+
 ## なぜ作るか
 
-近年のパッケージ supply-chain incident により、開発端末に置かれた CLI
-認証情報の扱いは、より現実的なリスクとして見直す必要が出てきました。
+近年のパッケージ supply-chain incident により、特に agent-assisted な開発端末に
+置かれた CLI 認証情報の扱いは、より現実的なリスクとして見直す必要が出てきました。
 GitHub CLI の認証情報がホスト OS 内の予測しやすい場所に永続化され、
 さらに単一のコマンドで利用可能な token を表示できる状態は、攻撃者にとって
 価値の高い足場になりえます。
@@ -97,6 +102,8 @@ skills/gh-sandbox-proxy-installer/SKILL.md
 別の machine で agent に install、verify、PATH 問題の調査、uninstall を
 任せる場合に使えます。実際の machine 変更は `install.sh` / `uninstall.sh`
 に集約しているため、人間が実行しても agent が実行しても同じ手順になります。
+Claude Code や Codex 利用者向けには、この Skill 経由の setup が推奨です。
+agent が local repository root を調べ、`workspace_mounts` の候補を提案できます。
 
 ## 使い方
 

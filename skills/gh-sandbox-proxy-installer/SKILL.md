@@ -1,12 +1,14 @@
 ---
 name: gh-sandbox-proxy-installer
-description: Install, verify, update, or uninstall the gh-sandbox-proxy wrapper so GitHub CLI auth runs inside Docker and host `gh auth token` is blocked. Use when a user asks to set up the safer gh wrapper, distribute it to a machine, fix Claude Code PATH issues for gh, or revert the wrapper.
+description: Install, verify, update, or uninstall the gh-sandbox-proxy wrapper for Claude Code, Codex, or similar coding-agent users so GitHub CLI auth runs inside Docker and host `gh auth token` is blocked. Use when a user asks to set up the safer gh wrapper, distribute it to a machine, fix agent PATH issues for gh, or revert the wrapper.
 ---
 
 # gh-sandbox-proxy installer
 
-Use this skill to install or maintain `gh-sandbox-proxy`, a wrapper that proxies
-`gh` commands into a Docker sandbox while blocking host-side token printing.
+Use this skill to install or maintain `gh-sandbox-proxy`, a wrapper for
+developers who let Claude Code, Codex, or similar coding agents run local shell
+commands. It proxies `gh` commands into a Docker sandbox while blocking
+host-side token printing.
 
 ## Default install workflow
 
