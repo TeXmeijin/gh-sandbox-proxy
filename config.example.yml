@@ -30,6 +30,26 @@ workspace_mounts:
   # - ~/ghq
   # - ~/Documents/src
 
+# Optional profile-based setup. Profiles are selected by GH_SANDBOX_PROFILE or
+# by the deepest matching path under match_paths. Keep mounts aligned with the
+# GitHub owner/org boundary that the token is allowed to access.
+profiles:
+  personal:
+    match_paths:
+      - ~/ghq/github.com/your-user
+    workspace_mounts:
+      - ~/ghq/github.com/your-user
+    token_provider: 1password
+    token_ref: op://Private/github-personal-gh-token/token
+
+  sidejob:
+    match_paths:
+      - ~/ghq/github.com/example-sidejob-org
+    workspace_mounts:
+      - ~/ghq/github.com/example-sidejob-org
+    token_provider: 1password
+    token_ref: op://Private/github-sidejob-gh-token/token
+
 # Container name is suffixed with the current host user.
 container_name: gh-sandbox-proxy
 

@@ -151,6 +151,38 @@ If your current directory is not under any configured workspace mount, commands
 that depend on local git context may fail. Use `--repo OWNER/REPO` for those
 commands, or add an appropriate ancestor directory to `workspace_mounts`.
 
+### Profiles and external token providers
+
+For stricter separation, configure profiles that align GitHub token scope with
+local workspace mounts. A profile can be selected explicitly with
+`GH_SANDBOX_PROFILE`, or automatically by the deepest matching `match_paths`
+entry for the current directory.
+
+```yaml
+profiles:
+  personal:
+    match_paths:
+      - ~/ghq/github.com/your-user
+    workspace_mounts:
+      - ~/ghq/github.com/your-user
+    token_provider: 1password
+    token_ref: op://Private/github-personal-gh-token/token
+
+  work:
+    match_paths:
+      - ~/ghq/github.com/your-org
+    workspace_mounts:
+      - ~/ghq/github.com/your-org
+    token_provider: 1password
+    token_ref: op://Private/github-work-gh-token/token
+```
+
+When `token_provider: 1password` is configured, the wrapper reads the token with
+`op read` at command execution time. The token is not stored in the host GitHub
+CLI credential store, and `gh auth token` remains blocked by the host wrapper.
+The token is installed into the sandbox through stdin and passed only to the
+sandboxed `gh` process as `GH_TOKEN`.
+
 To keep a sandbox for a normal workday in Japan while retaining `ttl` as the
 fallback outside that window:
 

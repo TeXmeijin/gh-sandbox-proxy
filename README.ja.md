@@ -152,6 +152,38 @@ context に依存する command は失敗することがあります。その場
 `--repo OWNER/REPO` を使うか、適切な祖先 directory を `workspace_mounts` に追加
 してください。
 
+### Profile と外部 token provider
+
+より強く分離したい場合は、GitHub token の権限境界と local workspace mount の
+境界を揃える profile を設定できます。profile は `GH_SANDBOX_PROFILE` で明示
+指定できます。未指定の場合は、current directory に最も深く一致する
+`match_paths` から自動選択します。
+
+```yaml
+profiles:
+  personal:
+    match_paths:
+      - ~/ghq/github.com/your-user
+    workspace_mounts:
+      - ~/ghq/github.com/your-user
+    token_provider: 1password
+    token_ref: op://Private/github-personal-gh-token/token
+
+  work:
+    match_paths:
+      - ~/ghq/github.com/your-org
+    workspace_mounts:
+      - ~/ghq/github.com/your-org
+    token_provider: 1password
+    token_ref: op://Private/github-work-gh-token/token
+```
+
+`token_provider: 1password` を設定すると、wrapper は command 実行時に
+`op read` で token を読みます。token は host の GitHub CLI credential store
+には保存されず、`gh auth token` は引き続き host wrapper で block されます。
+token は stdin 経由で sandbox に渡され、sandbox 内の `gh` process にだけ
+`GH_TOKEN` として渡されます。
+
 日本時間の通常稼働時間中は sandbox を維持し、それ以外では `ttl` を使う例:
 
 ```yaml
