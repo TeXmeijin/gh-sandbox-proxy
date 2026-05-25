@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shlex
 import subprocess
 import sys
@@ -40,6 +41,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "auth_storage": "tmpfs",
     "auth_tmpfs_size": "16m",
     "workspace_mounts": [],
+    "profiles": {},
     "auto_auth": True,
     "auth_hostname": "github.com",
     "blocked": [
@@ -93,6 +95,34 @@ def parse_scalar(value: str) -> Any:
     return value
 
 
+def strip_yaml_comment(line: str) -> str:
+    in_single = False
+    in_double = False
+    escaped = False
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and in_double:
+            escaped = True
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if char == "#" and not in_single and not in_double:
+            return line[:index]
+    return line
+
+
+def parse_list_item(item: str) -> Any:
+    if item.startswith("["):
+        return json.loads(item.replace("'", '"'))
+    return parse_scalar(item)
+
+
 def parse_yaml_like(text: str) -> dict[str, Any]:
     """
     Tiny YAML subset parser for this config file.
@@ -102,29 +132,64 @@ def parse_yaml_like(text: str) -> dict[str, Any]:
       key:
         - scalar
         - ["a", "b"]
+      key:
+        nested_key: scalar
+        nested_list:
+          - scalar
     """
-    result: dict[str, Any] = {}
-    current_key: str | None = None
+    lines: list[tuple[int, str, str]] = []
     for raw_line in text.splitlines():
-        line = raw_line.split("#", 1)[0].rstrip()
+        line = strip_yaml_comment(raw_line).rstrip()
         if not line.strip():
             continue
-        if not line.startswith(" ") and ":" in line:
-            key, value = line.split(":", 1)
-            current_key = key.strip()
-            if value.strip():
-                result[current_key] = parse_scalar(value)
+        indent = len(line) - len(line.lstrip(" "))
+        lines.append((indent, line.lstrip(), raw_line))
+
+    def parse_list(index: int, indent: int) -> tuple[list[Any], int]:
+        result: list[Any] = []
+        while index < len(lines):
+            line_indent, content, raw_line = lines[index]
+            if line_indent < indent:
+                break
+            if line_indent != indent or not content.startswith("-"):
+                break
+            item = content[1:].strip()
+            if not item:
+                raise ValueError(f"unsupported empty list item: {raw_line}")
+            result.append(parse_list_item(item))
+            index += 1
+        return result, index
+
+    def parse_mapping(index: int, indent: int) -> tuple[dict[str, Any], int]:
+        result: dict[str, Any] = {}
+        while index < len(lines):
+            line_indent, content, raw_line = lines[index]
+            if line_indent < indent:
+                break
+            if line_indent != indent:
+                raise ValueError(f"unsupported indentation: {raw_line}")
+            if content.startswith("-") or ":" not in content:
+                raise ValueError(f"unsupported config line: {raw_line}")
+            key, value = content.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            index += 1
+            if value:
+                result[key] = parse_list_item(value) if value.startswith("[") else parse_scalar(value)
+                continue
+            if index >= len(lines) or lines[index][0] <= line_indent:
+                result[key] = []
+                continue
+            child_indent, child_content, _ = lines[index]
+            if child_content.startswith("-"):
+                result[key], index = parse_list(index, child_indent)
             else:
-                result[current_key] = []
-            continue
-        if current_key and line.lstrip().startswith("-"):
-            item = line.lstrip()[1:].strip()
-            if item.startswith("["):
-                result[current_key].append(json.loads(item.replace("'", '"')))
-            else:
-                result[current_key].append(parse_scalar(item))
-            continue
-        raise ValueError(f"unsupported config line: {raw_line}")
+                result[key], index = parse_mapping(index, child_indent)
+        return result, index
+
+    result, index = parse_mapping(0, 0)
+    if index != len(lines):
+        raise ValueError(f"unsupported config line: {lines[index][2]}")
     return result
 
 
@@ -137,6 +202,70 @@ def load_config() -> dict[str, Any]:
         except Exception as exc:
             raise SystemExit(f"{APP}: failed to read {path}: {exc}") from exc
     return cfg
+
+
+def expand_path(raw: Any) -> Path:
+    return Path(os.path.expandvars(os.path.expanduser(str(raw)))).resolve()
+
+
+def profile_map(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    profiles = cfg.get("profiles", {})
+    if not isinstance(profiles, dict):
+        raise SystemExit(f"{APP}: profiles must be a mapping")
+    result: dict[str, dict[str, Any]] = {}
+    for name, profile in profiles.items():
+        if not isinstance(profile, dict):
+            raise SystemExit(f"{APP}: profile {name!r} must be a mapping")
+        result[str(name)] = dict(profile)
+    return result
+
+
+def select_profile_name(cfg: dict[str, Any]) -> str | None:
+    profiles = profile_map(cfg)
+    requested = os.environ.get("GH_SANDBOX_PROFILE")
+    if requested:
+        if requested not in profiles:
+            raise SystemExit(f"{APP}: GH_SANDBOX_PROFILE={requested!r} is not configured")
+        return requested
+
+    cwd = Path.cwd().resolve()
+    best: tuple[int, str] | None = None
+    for name, profile in profiles.items():
+        match_paths = profile.get("match_paths") or profile.get("workspace_mounts") or []
+        for raw in match_paths:
+            path = expand_path(raw)
+            try:
+                cwd.relative_to(path)
+            except ValueError:
+                continue
+            score = len(path.parts)
+            if best is None or score > best[0]:
+                best = (score, name)
+    if best:
+        return best[1]
+    default_profile = cfg.get("default_profile")
+    return str(default_profile) if default_profile else None
+
+
+def apply_profile(cfg: dict[str, Any]) -> dict[str, Any]:
+    name = select_profile_name(cfg)
+    merged = dict(cfg)
+    if not name:
+        merged["active_profile"] = None
+        return merged
+
+    profiles = profile_map(cfg)
+    profile = profiles[name]
+    for key, value in profile.items():
+        if key == "match_paths":
+            continue
+        merged[key] = value
+    merged["active_profile"] = name
+    if "container_name" not in profile:
+        base = str(cfg.get("container_name") or "gh-sandbox-proxy")
+        safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "-", name)
+        merged["container_name"] = f"{base}-{safe_name}"
+    return merged
 
 
 def parse_duration(value: Any) -> int:
@@ -297,7 +426,7 @@ def docker_source_path(host_path: Path) -> str:
 def configured_workspace_mounts(cfg: dict[str, Any]) -> list[Path]:
     roots: list[Path] = []
     for raw in cfg.get("workspace_mounts", []) or []:
-        path = Path(os.path.expandvars(os.path.expanduser(str(raw)))).resolve()
+        path = expand_path(raw)
         if path.exists() and path.is_dir():
             roots.append(path)
         else:
@@ -415,6 +544,56 @@ def docker_exec(name: str, args: list[str], *, capture: bool = False, tty: bool 
     return run(cmd, check=False, capture=capture)
 
 
+def token_provider(cfg: dict[str, Any]) -> str | None:
+    provider = cfg.get("token_provider")
+    return str(provider) if provider else None
+
+
+def read_1password_token(ref: str) -> str:
+    if not ref:
+        raise SystemExit(f"{APP}: token_ref is required for token_provider=1password")
+    proc = run(["op", "read", ref], check=False, capture=True)
+    if proc.returncode != 0:
+        raise SystemExit(f"{APP}: failed to read 1Password token reference {ref!r}: {proc.stderr.strip()}")
+    token = proc.stdout.strip()
+    if not token:
+        raise SystemExit(f"{APP}: 1Password token reference {ref!r} returned an empty value")
+    return token
+
+
+def read_token(cfg: dict[str, Any]) -> str | None:
+    provider = token_provider(cfg)
+    if not provider:
+        return None
+    if provider == "1password":
+        return read_1password_token(str(cfg.get("token_ref") or ""))
+    if provider == "env":
+        env_name = str(cfg.get("token_env") or "GH_TOKEN")
+        token = os.environ.get(env_name, "")
+        if not token:
+            raise SystemExit(f"{APP}: environment variable {env_name} is empty")
+        return token
+    raise SystemExit(f"{APP}: unsupported token_provider {provider!r}")
+
+
+def install_token_file(name: str, token: str) -> str:
+    token_path = f"/tmp/gh-sandbox-proxy-token-{secrets.token_hex(8)}"
+    proc = subprocess.run(
+        ["docker", "exec", "-i", name, "sh", "-c", f"umask 077; cat > {shlex.quote(token_path)}"],
+        input=token,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(f"{APP}: failed to install ephemeral token in sandbox: {proc.stderr.strip()}")
+    return token_path
+
+
+def remove_token_file(name: str, token_path: str) -> None:
+    docker_exec(name, ["rm", "-f", token_path], capture=True, tty=False)
+
+
 def prepare_browser_hook(name: str) -> None:
     script = """#!/bin/sh
 printf '%s\\n' "$@" > /tmp/gh-sandbox-proxy-browser-url
@@ -446,14 +625,29 @@ def read_browser_url(name: str) -> str | None:
 def docker_exec_gh(name: str, args: list[str], cfg: dict[str, Any]) -> subprocess.CompletedProcess[str]:
     prepare_browser_hook(name)
     clear_browser_url(name)
+    token = read_token(cfg)
+    token_path = install_token_file(name, token) if token else None
     cmd = ["docker", "exec"]
     if sys.stdin.isatty() and sys.stdout.isatty():
         cmd.append("-it")
     workdir = container_workdir_for_cwd(cfg)
     if workdir:
         cmd += ["-w", workdir]
-    cmd += ["-e", "BROWSER=/tmp/gh-sandbox-proxy-browser", name, "gh", *args]
+    cmd += ["-e", "BROWSER=/tmp/gh-sandbox-proxy-browser", name]
+    if token_path:
+        cmd += [
+            "sh",
+            "-c",
+            'GH_TOKEN="$(cat "$1")"; rm -f "$1"; export GH_TOKEN; shift; exec gh "$@"',
+            "gh-sandbox-proxy-token",
+            token_path,
+            *args,
+        ]
+    else:
+        cmd += ["gh", *args]
     proc = run(cmd, check=False, capture=False)
+    if token_path:
+        remove_token_file(name, token_path)
     url = read_browser_url(name)
     if url:
         opener = os.environ.get("GH_SANDBOX_OPEN") or ("open" if sys.platform == "darwin" else "xdg-open")
@@ -465,6 +659,8 @@ def docker_exec_gh(name: str, args: list[str], cfg: dict[str, Any]) -> subproces
 
 
 def ensure_auth(name: str, cfg: dict[str, Any]) -> None:
+    if token_provider(cfg):
+        return
     host = str(cfg.get("auth_hostname") or "github.com")
     status = docker_exec(name, ["gh", "auth", "status", "-h", host], capture=True, tty=False)
     if status.returncode == 0:
@@ -498,10 +694,13 @@ Sandbox controls:
 Config:
   ~/.config/gh-sandbox-proxy/config.yml
   GH_SANDBOX_CONFIG=/path/to/config.yml
+  GH_SANDBOX_PROFILE=name
 
 Notes:
   - The default TTL is 1h.
   - Tokens are not written to the host gh config by this wrapper.
+  - When token_provider is configured, tokens are fetched at command execution
+    time and passed only to the sandboxed gh process.
   - While the container is alive, commands executed inside that container can
     still use the container-local gh authentication.
 """
@@ -512,6 +711,9 @@ def sandbox_command(args: list[str], cfg: dict[str, Any]) -> int:
     name = container_name(cfg)
     sub = args[1] if len(args) > 1 else "status"
     if sub == "status":
+        print(f"active_profile: {cfg.get('active_profile') or '(none)'}")
+        if token_provider(cfg):
+            print(f"token_provider: {token_provider(cfg)}")
         if docker_running(name):
             started = docker_started_at(name)
             age = int(time.time() - started) if started else "unknown"
@@ -522,6 +724,8 @@ def sandbox_command(args: list[str], cfg: dict[str, Any]) -> int:
             print(f"expiry_policy: {expiry_label}")
             workdir = container_workdir_for_cwd(cfg)
             print(f"container_workdir: {workdir or '(none; use --repo or configure workspace_mounts)'}")
+            roots = configured_workspace_mounts(cfg)
+            print(f"workspace_mounts: {', '.join(str(root) for root in roots) if roots else '(none)'}")
         else:
             print(f"not running: {name}")
         return 0
@@ -558,7 +762,7 @@ def sandbox_command(args: list[str], cfg: dict[str, Any]) -> int:
 
 def main() -> int:
     args = sys.argv[1:]
-    cfg = load_config()
+    cfg = apply_profile(load_config())
 
     if not args or args in (["--help"], ["help"], ["-h"]):
         print_help()
