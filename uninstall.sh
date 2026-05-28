@@ -10,8 +10,6 @@ SYSTEM_BACKUP_PATH="${SYSTEM_LINK_PATH}.original-before-gh-sandbox-proxy"
 ZSHENV_PATH="${GH_SANDBOX_ZSHENV_PATH:-$HOME/.zshenv}"
 ZPROFILE_PATH="$HOME/.zprofile"
 ZSHRC_PATH="$HOME/.zshrc"
-CONTAINER_NAME="${GH_SANDBOX_CONTAINER_NAME:-gh-sandbox-proxy-${USER:-user}}"
-AUTH_VOLUME_NAME="${CONTAINER_NAME}-auth"
 
 if [[ -L "$LINK_PATH" && "$(readlink "$LINK_PATH")" == "$WRAPPER_BIN" ]]; then
   rm -f "$LINK_PATH"
@@ -49,8 +47,5 @@ PY
 remove_zsh_path_block "$ZSHENV_PATH"
 remove_zsh_path_block "$ZPROFILE_PATH"
 remove_zsh_path_block "$ZSHRC_PATH"
-
-docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-docker volume rm -f "$AUTH_VOLUME_NAME" >/dev/null 2>&1 || true
 
 echo "uninstall complete"

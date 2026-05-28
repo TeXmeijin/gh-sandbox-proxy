@@ -1,640 +1,182 @@
 #!/usr/bin/env python3
 """
-Token-hiding GitHub CLI proxy.
+Token-hiding GitHub CLI wrapper.
 
-This command is intended to be placed before the real `gh` in PATH. It runs the
-official GitHub CLI inside a disposable Docker container, so GitHub CLI auth
-state is kept out of the host OS. The wrapper blocks token-printing commands on
-the host-side interface.
+Place this command before the real `gh` in PATH. It obtains a GitHub App User
+Access Token via ghtkn for each `gh` invocation, injects the token only into the
+real `gh` child process, and blocks token-printing commands on the wrapper
+interface.
 """
 
 from __future__ import annotations
 
-import json
 import os
-import re
 import shlex
 import subprocess
 import sys
-import time
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 APP = "gh-sandbox-proxy"
-DEFAULT_IMAGE = "gh-sandbox-proxy:latest"
-DEFAULT_TTL_SECONDS = 3600
-CONTAINER_LABEL = "app=gh-sandbox-proxy"
-
-
-DEFAULT_CONFIG: dict[str, Any] = {
-    "image": DEFAULT_IMAGE,
-    "ttl": "1h",
-    "active_window_enabled": False,
-    "active_window_timezone": "Asia/Tokyo",
-    "active_window_start": "10:00",
-    "active_window_end": "19:00",
-    "container_name": "gh-sandbox-proxy",
-    "auth_storage": "tmpfs",
-    "auth_tmpfs_size": "16m",
-    "workspace_mounts": [],
-    "auto_auth": True,
-    "auth_hostname": "github.com",
-    "blocked": [
-        ["auth", "token"],
-        ["auth", "status", "--show-token"],
-    ],
-    "no_auth_commands": [
-        ["--help"],
-        ["help"],
-        ["--version"],
-        ["version"],
-        ["completion"],
-        ["sandbox"],
-        ["auth", "login"],
-        ["auth", "logout"],
-        ["auth", "status"],
-    ],
-}
+DEFAULT_REAL_GH_BIN = "/opt/homebrew/bin/gh"
+DEFAULT_GHTKN_BIN = "/opt/homebrew/bin/ghtkn"
 
 
 def eprint(message: str = "") -> None:
     print(message, file=sys.stderr)
 
 
-def run(cmd: list[str], *, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        cmd,
-        check=check,
-        text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE if capture else None,
+def executable(path: str) -> bool:
+    return Path(path).is_file() and os.access(path, os.X_OK)
+
+
+def real_gh_bin() -> str:
+    gh = os.environ.get("GH_SANDBOX_REAL_GH") or DEFAULT_REAL_GH_BIN
+    if executable(gh):
+        return gh
+    raise SystemExit(f"{APP}: real gh not found or not executable: {gh}")
+
+
+def ghtkn_bin() -> str:
+    ghtkn = os.environ.get("GH_SANDBOX_GHTKN_BIN") or DEFAULT_GHTKN_BIN
+    if executable(ghtkn):
+        return ghtkn
+    raise SystemExit(f"{APP}: ghtkn not found or not executable: {ghtkn}")
+
+
+def ghtkn_app_name() -> str:
+    app_name = os.environ.get("GHTKN_APP_NAME", "").strip()
+    if app_name:
+        return app_name
+    raise SystemExit(
+        f"{APP}: GHTKN_APP_NAME is required.\n"
+        f"{APP}: set it per project, for example with direnv or shell startup:\n"
+        f"{APP}:   export GHTKN_APP_NAME=owner/app-name"
     )
 
 
-def config_path() -> Path:
-    return Path(os.environ.get("GH_SANDBOX_CONFIG", "~/.config/gh-sandbox-proxy/config.yml")).expanduser()
-
-
-def parse_scalar(value: str) -> Any:
-    value = value.strip()
-    if value in {"true", "True"}:
-        return True
-    if value in {"false", "False"}:
-        return False
-    if value in {"null", "None", "~"}:
-        return None
-    if value.startswith('"') and value.endswith('"'):
-        return value[1:-1]
-    if value.startswith("'") and value.endswith("'"):
-        return value[1:-1]
-    return value
-
-
-def parse_yaml_like(text: str) -> dict[str, Any]:
-    """
-    Tiny YAML subset parser for this config file.
-
-    Supported:
-      key: scalar
-      key:
-        - scalar
-        - ["a", "b"]
-    """
-    result: dict[str, Any] = {}
-    current_key: str | None = None
-    for raw_line in text.splitlines():
-        line = raw_line.split("#", 1)[0].rstrip()
-        if not line.strip():
-            continue
-        if not line.startswith(" ") and ":" in line:
-            key, value = line.split(":", 1)
-            current_key = key.strip()
-            if value.strip():
-                result[current_key] = parse_scalar(value)
-            else:
-                result[current_key] = []
-            continue
-        if current_key and line.lstrip().startswith("-"):
-            item = line.lstrip()[1:].strip()
-            if item.startswith("["):
-                result[current_key].append(json.loads(item.replace("'", '"')))
-            else:
-                result[current_key].append(parse_scalar(item))
-            continue
-        raise ValueError(f"unsupported config line: {raw_line}")
-    return result
-
-
-def load_config() -> dict[str, Any]:
-    cfg = dict(DEFAULT_CONFIG)
-    path = config_path()
-    if path.exists():
-        try:
-            cfg.update(parse_yaml_like(path.read_text()))
-        except Exception as exc:
-            raise SystemExit(f"{APP}: failed to read {path}: {exc}") from exc
-    return cfg
-
-
-def parse_duration(value: Any) -> int:
-    if isinstance(value, int):
-        return value
-    text = str(value).strip()
-    match = re.fullmatch(r"(\d+)([smhd]?)", text)
-    if not match:
-        raise SystemExit(f"{APP}: invalid ttl {value!r}; use examples like 30m, 1h, 3600")
-    amount = int(match.group(1))
-    unit = match.group(2) or "s"
-    return amount * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
-
-
-def parse_hhmm(value: Any, key: str) -> tuple[int, int]:
-    match = re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", str(value).strip())
-    if not match:
-        raise SystemExit(f"{APP}: invalid {key} {value!r}; use HH:MM like 10:00")
-    return int(match.group(1)), int(match.group(2))
-
-
-def current_expiry_seconds(started: float | None, cfg: dict[str, Any]) -> tuple[int, str]:
-    ttl = parse_duration(cfg.get("ttl", DEFAULT_TTL_SECONDS))
-    if not started or not cfg.get("active_window_enabled", False):
-        return ttl, str(cfg.get("ttl", ttl))
-
-    timezone_name = str(cfg.get("active_window_timezone") or "Asia/Tokyo")
-    try:
-        tz = ZoneInfo(timezone_name)
-    except ZoneInfoNotFoundError as exc:
-        raise SystemExit(f"{APP}: unknown active_window_timezone {timezone_name!r}") from exc
-
-    now = datetime.now(tz)
-    start_hour, start_minute = parse_hhmm(cfg.get("active_window_start", "10:00"), "active_window_start")
-    end_hour, end_minute = parse_hhmm(cfg.get("active_window_end", "19:00"), "active_window_end")
-    window_start = now.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
-    window_end = now.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
-    if window_end <= window_start:
-        raise SystemExit(f"{APP}: active window must end after it starts")
-
-    started_at = datetime.fromtimestamp(started, tz)
-    if window_start <= now < window_end and started_at >= window_start:
-        return int(window_end.timestamp() - started), f"{timezone_name} {cfg.get('active_window_start')}-{cfg.get('active_window_end')}"
-
-    return ttl, str(cfg.get("ttl", ttl))
-
-
-def new_container_lifetime_seconds(cfg: dict[str, Any]) -> tuple[int, str]:
-    ttl = parse_duration(cfg.get("ttl", DEFAULT_TTL_SECONDS))
-    if not cfg.get("active_window_enabled", False):
-        return ttl, str(cfg.get("ttl", ttl))
-
-    timezone_name = str(cfg.get("active_window_timezone") or "Asia/Tokyo")
-    try:
-        tz = ZoneInfo(timezone_name)
-    except ZoneInfoNotFoundError as exc:
-        raise SystemExit(f"{APP}: unknown active_window_timezone {timezone_name!r}") from exc
-
-    now = datetime.now(tz)
-    start_hour, start_minute = parse_hhmm(cfg.get("active_window_start", "10:00"), "active_window_start")
-    end_hour, end_minute = parse_hhmm(cfg.get("active_window_end", "19:00"), "active_window_end")
-    window_start = now.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
-    window_end = now.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
-    if window_end <= window_start:
-        raise SystemExit(f"{APP}: active window must end after it starts")
-    if window_start <= now < window_end:
-        return max(1, int(window_end.timestamp() - now.timestamp())), f"{timezone_name} {cfg.get('active_window_start')}-{cfg.get('active_window_end')}"
-    return ttl, str(cfg.get("ttl", ttl))
-
-
 def pattern_matches(args: list[str], pattern: list[str]) -> bool:
-    if len(args) < len(pattern):
-        return False
-    return args[: len(pattern)] == pattern
+    return len(args) >= len(pattern) and args[: len(pattern)] == pattern
 
 
-def is_blocked(args: list[str], cfg: dict[str, Any]) -> bool:
-    for pattern in cfg.get("blocked", []):
-        if pattern_matches(args, list(pattern)):
-            return True
-    return False
+def is_blocked(args: list[str]) -> bool:
+    blocked = [
+        ["auth", "token"],
+        ["auth", "status", "--show-token"],
+    ]
+    return any(pattern_matches(args, pattern) for pattern in blocked)
 
 
 def is_api_write(args: list[str]) -> tuple[bool, str]:
-    """
-    Decide whether a `gh api ...` invocation is a write / mutation.
-
-    The wrapper restricts host-side `gh api` to read-only verbs so that the
-    Claude Code sandbox can safely exempt `gh api *` from sandboxing. Returns
-    True when any of the following hold:
-
-      - `-X` / `--method` is followed by a method other than GET/HEAD/OPTIONS
-      - `--input` appears (request body file)
-      - for the REST endpoints: `-F` / `-f` / `--field` / `--raw-field` appears
-        (any request body is treated as a write)
-      - for the `graphql` subcommand: a field whose value starts with
-        `query=` and contains the substring `mutation`
-    """
     if not args or args[0] != "api":
         return False, ""
 
-    READ_METHODS = {"GET", "HEAD", "OPTIONS"}
+    read_methods = {"GET", "HEAD", "OPTIONS"}
     is_graphql = len(args) >= 2 and args[1] == "graphql"
     field_flags = {"-F", "-f", "--field", "--raw-field"}
 
     i = 1
     while i < len(args):
-        a = args[i]
-        if a in ("-X", "--method") and i + 1 < len(args):
-            m = args[i + 1].upper()
-            if m not in READ_METHODS:
-                return True, f"non-GET method: {m}"
+        arg = args[i]
+        if arg in {"-X", "--method"} and i + 1 < len(args):
+            method = args[i + 1].upper()
+            if method not in read_methods:
+                return True, f"non-GET method: {method}"
             i += 2
             continue
-        if a == "--input":
+        if arg.startswith("--method="):
+            method = arg.split("=", 1)[1].upper()
+            if method not in read_methods:
+                return True, f"non-GET method: {method}"
+        if arg == "--input" or arg.startswith("--input="):
             return True, "--input implies request body"
-        if a in field_flags:
+        if arg in field_flags:
             if is_graphql:
                 if i + 1 < len(args):
-                    v = args[i + 1]
-                    if v.lower().lstrip().startswith("query=") and "mutation" in v.lower():
+                    value = args[i + 1].lower().lstrip()
+                    if value.startswith("query=") and "mutation" in value:
                         return True, "GraphQL mutation detected"
                 i += 2
                 continue
-            return True, f"field flag implies request body: {a}"
+            return True, f"field flag implies request body: {arg}"
+        if any(arg.startswith(f"{flag}=") for flag in field_flags):
+            if is_graphql:
+                value = arg.split("=", 1)[1].lower().lstrip()
+                if value.startswith("query=") and "mutation" in value:
+                    return True, "GraphQL mutation detected"
+            else:
+                return True, f"field flag implies request body: {arg.split('=', 1)[0]}"
         i += 1
+
     return False, ""
 
 
-def needs_auth(args: list[str], cfg: dict[str, Any]) -> bool:
-    if not cfg.get("auto_auth", True):
-        return False
-    if not args:
-        return False
-    for pattern in cfg.get("no_auth_commands", []):
-        if pattern_matches(args, list(pattern)):
-            return False
-    return True
-
-
-def container_name(cfg: dict[str, Any]) -> str:
-    base = str(cfg.get("container_name") or "gh-sandbox-proxy")
-    user = re.sub(r"[^a-zA-Z0-9_.-]", "-", os.environ.get("USER", "user"))
-    return f"{base}-{user}"
-
-
-def auth_volume_name(cfg: dict[str, Any]) -> str:
-    return f"{container_name(cfg)}-auth"
-
-
-def docker_exists(name: str) -> bool:
-    proc = run(["docker", "inspect", name], check=False, capture=True)
-    return proc.returncode == 0
-
-
-def docker_running(name: str) -> bool:
-    proc = run(["docker", "inspect", "-f", "{{.State.Running}}", name], check=False, capture=True)
-    return proc.returncode == 0 and proc.stdout.strip() == "true"
-
-
-def docker_started_at(name: str) -> float | None:
-    proc = run(["docker", "inspect", "-f", "{{.State.StartedAt}}", name], check=False, capture=True)
-    if proc.returncode != 0:
-        return None
-    text = proc.stdout.strip()
-    if not text:
-        return None
-    # Docker returns RFC3339Nano. Keep parsing simple by dropping nanoseconds.
-    text = re.sub(r"\.\d+Z$", "Z", text)
-    if text.startswith("0001-"):
-        return None
-    try:
-        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
-    except ValueError:
-        return None
-
-
-def remove_container(name: str) -> None:
-    run(["docker", "rm", "-f", name], check=False, capture=True)
-
-
-def remove_auth_volume(cfg: dict[str, Any]) -> None:
-    run(["docker", "volume", "rm", "-f", auth_volume_name(cfg)], check=False, capture=True)
-
-
-def container_mount_sources(name: str) -> set[str]:
-    proc = run(["docker", "inspect", "-f", "{{json .Mounts}}", name], check=False, capture=True)
-    if proc.returncode != 0:
-        return set()
-    try:
-        mounts = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return set()
-    return {str(mount.get("Source")) for mount in mounts if mount.get("Source")}
-
-
-def docker_source_path(host_path: Path) -> str:
-    text = str(host_path)
-    if text.startswith("/Users/") or text.startswith("/Volumes/"):
-        return f"/host_mnt{text}"
-    return text
-
-
-def configured_workspace_mounts(cfg: dict[str, Any]) -> list[Path]:
-    roots: list[Path] = []
-    for raw in cfg.get("workspace_mounts", []) or []:
-        path = Path(os.path.expandvars(os.path.expanduser(str(raw)))).resolve()
-        if path.exists() and path.is_dir():
-            roots.append(path)
-        else:
-            eprint(f"{APP}: ignoring missing workspace mount: {raw}")
-    return roots
-
-
-def mount_target(index: int, root: Path) -> str:
-    name = re.sub(r"[^a-zA-Z0-9_.-]", "-", root.name) or f"root{index}"
-    return f"/workspace/{index}-{name}"
-
-
-def container_workdir_for_cwd(cfg: dict[str, Any]) -> str | None:
-    cwd = Path.cwd().resolve()
-    best: tuple[int, Path, str] | None = None
-    for index, root in enumerate(configured_workspace_mounts(cfg)):
-        try:
-            rel = cwd.relative_to(root)
-        except ValueError:
-            continue
-        score = len(root.parts)
-        target = mount_target(index, root)
-        if best is None or score > best[0]:
-            best = (score, root, str(Path(target) / rel))
-    return best[2] if best else None
-
-
-def mounts_match_config(name: str, cfg: dict[str, Any]) -> bool:
-    sources = container_mount_sources(name)
-    for root in configured_workspace_mounts(cfg):
-        if str(root) not in sources and docker_source_path(root) not in sources:
-            return False
-    return True
-
-
-def ensure_container(cfg: dict[str, Any]) -> str:
-    name = container_name(cfg)
-    if docker_exists(name):
-        started = docker_started_at(name)
-        expiry_seconds, expiry_label = current_expiry_seconds(started, cfg)
-        if started and time.time() - started > expiry_seconds:
-            eprint(f"{APP}: sandbox expired after {expiry_label}; recreating container")
-            remove_container(name)
-            remove_auth_volume(cfg)
-        elif not docker_running(name):
-            remove_container(name)
-        elif not mounts_match_config(name, cfg):
-            eprint(f"{APP}: recreating sandbox for configured workspace mounts")
-            remove_container(name)
-
-    if docker_running(name):
-        return name
-
-    image = str(cfg.get("image") or DEFAULT_IMAGE)
-    eprint(f"{APP}: starting sandbox container {name} ({image})")
-    lifetime_seconds, expiry_label = new_container_lifetime_seconds(cfg)
-    eprint(f"{APP}: sandbox lifetime: {expiry_label}")
-
-    roots = configured_workspace_mounts(cfg)
-
-    def build_run_cmd(mount_roots: list[Path]) -> list[str]:
-        cmd = [
-            "docker",
-            "run",
-            "-d",
-            "--rm",
-            "--name",
-            name,
-            "--label",
-            CONTAINER_LABEL,
-            "--tmpfs",
-            f"/root/.config/gh:rw,noexec,nosuid,nodev,size={cfg.get('auth_tmpfs_size', '16m')}",
-            "--entrypoint",
-            "/bin/sh",
-        ]
-        for index, root in enumerate(mount_roots):
-            cmd += ["-v", f"{root}:{mount_target(index, root)}"]
-        cmd += [image, "-c", f"sleep {lifetime_seconds}"]
-        return cmd
-
-    while True:
-        cmd = build_run_cmd(roots)
-        proc = run(cmd, check=False, capture=True)
-        if proc.returncode == 0:
-            break
-        match = re.search(r"The path (.+?) is not shared from the host", proc.stderr)
-        if not match:
-            break
-        denied = Path(match.group(1)).resolve()
-        new_roots = [root for root in roots if root != denied]
-        if len(new_roots) == len(roots):
-            break
-        eprint(f"{APP}: workspace mount denied by Docker Desktop; skipping {denied}")
-        remove_container(name)
-        roots = new_roots
-
-    if proc.returncode != 0:
-        raise SystemExit(
-            f"{APP}: failed to start Docker sandbox.\n"
-            f"Command: {' '.join(shlex.quote(part) for part in cmd)}\n"
-            f"{proc.stderr.strip()}"
-        )
-    return name
-
-
-def docker_exec(name: str, args: list[str], *, capture: bool = False, tty: bool | None = None, workdir: str | None = None) -> subprocess.CompletedProcess[str]:
-    cmd = ["docker", "exec"]
-    if tty is None:
-        tty = sys.stdin.isatty() and sys.stdout.isatty()
-    if tty:
-        cmd.append("-it")
-    if workdir:
-        cmd += ["-w", workdir]
-    cmd += [name, *args]
-    return run(cmd, check=False, capture=capture)
-
-
-def prepare_browser_hook(name: str) -> None:
-    script = """#!/bin/sh
-printf '%s\\n' "$@" > /tmp/gh-sandbox-proxy-browser-url
-exit 0
-"""
+def ghtkn_token(app_name: str) -> str:
     proc = subprocess.run(
-        ["docker", "exec", "-i", name, "sh", "-c", "cat > /tmp/gh-sandbox-proxy-browser && chmod +x /tmp/gh-sandbox-proxy-browser"],
-        input=script,
+        [ghtkn_bin(), "get", app_name],
+        check=False,
         text=True,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=None,
     )
     if proc.returncode != 0:
-        raise SystemExit(f"{APP}: failed to prepare browser hook: {proc.stderr.strip()}")
+        raise SystemExit(proc.returncode)
 
-
-def clear_browser_url(name: str) -> None:
-    docker_exec(name, ["rm", "-f", "/tmp/gh-sandbox-proxy-browser-url"], capture=True, tty=False)
-
-
-def read_browser_url(name: str) -> str | None:
-    proc = docker_exec(name, ["cat", "/tmp/gh-sandbox-proxy-browser-url"], capture=True, tty=False)
-    if proc.returncode != 0:
-        return None
-    url = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
-    return url or None
-
-
-def docker_exec_gh(name: str, args: list[str], cfg: dict[str, Any]) -> subprocess.CompletedProcess[str]:
-    prepare_browser_hook(name)
-    clear_browser_url(name)
-    cmd = ["docker", "exec"]
-    if sys.stdin.isatty() and sys.stdout.isatty():
-        cmd.append("-it")
-    workdir = container_workdir_for_cwd(cfg)
-    if workdir:
-        cmd += ["-w", workdir]
-    cmd += ["-e", "BROWSER=/tmp/gh-sandbox-proxy-browser", name, "gh", *args]
-    proc = run(cmd, check=False, capture=False)
-    url = read_browser_url(name)
-    if url:
-        opener = os.environ.get("GH_SANDBOX_OPEN") or ("open" if sys.platform == "darwin" else "xdg-open")
-        host_open = subprocess.run([opener, url], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-        if host_open.returncode != 0:
-            eprint(f"{APP}: failed to open browser on host: {host_open.stderr.strip()}")
-            eprint(url)
-    return proc
-
-
-def ensure_auth(name: str, cfg: dict[str, Any]) -> None:
-    host = str(cfg.get("auth_hostname") or "github.com")
-    status = docker_exec(name, ["gh", "auth", "status", "-h", host], capture=True, tty=False)
-    if status.returncode == 0:
-        return
-    eprint(f"{APP}: GitHub CLI is not authenticated inside the sandbox.")
-    eprint(f"{APP}: starting container-local auth. Token will not be stored in host gh config.")
-    login = docker_exec(name, ["gh", "auth", "login", "-h", host, "--web"], tty=True)
-    if login.returncode != 0:
-        raise SystemExit(login.returncode)
+    token = proc.stdout.strip()
+    if not token.startswith("ghu_"):
+        raise SystemExit(f"{APP}: ghtkn returned an unexpected token prefix")
+    return token
 
 
 def print_help() -> None:
     print(
         """gh-sandbox-proxy
 
-This is a host-side `gh` proxy. It runs the official GitHub CLI inside a
-disposable Docker container and blocks token-printing commands.
+Host-side `gh` wrapper for ghtkn-backed GitHub App User Access Tokens.
 
-Default behavior:
-  gh <any gh command>        proxy to container-local official gh
+Behavior:
+  gh <any gh command>        run real gh with a per-command ghtkn token
   gh auth token             blocked on purpose
   gh auth status --show-token
                             blocked on purpose
 
-Sandbox controls:
-  gh sandbox status         show container status
-  gh sandbox cleanup        destroy the sandbox immediately
-  gh sandbox build          build the local Docker image
-  gh sandbox config         show config path
+Required environment:
+  GHTKN_APP_NAME=owner/app-name
 
-Config:
-  ~/.config/gh-sandbox-proxy/config.yml
-  GH_SANDBOX_CONFIG=/path/to/config.yml
-
-Notes:
-  - The default TTL is 1h.
-  - Tokens are not written to the host gh config by this wrapper.
-  - While the container is alive, commands executed inside that container can
-    still use the container-local gh authentication.
+Optional environment:
+  GH_SANDBOX_REAL_GH=/path/to/gh
+  GH_SANDBOX_GHTKN_BIN=/path/to/ghtkn
+  GH_SANDBOX_ALLOW_WRITE=1  allow write-likely `gh api` calls
 """
     )
 
 
-def sandbox_command(args: list[str], cfg: dict[str, Any]) -> int:
-    name = container_name(cfg)
-    sub = args[1] if len(args) > 1 else "status"
-    if sub == "status":
-        if docker_running(name):
-            started = docker_started_at(name)
-            age = int(time.time() - started) if started else "unknown"
-            _, expiry_label = current_expiry_seconds(started, cfg)
-            print(f"running: {name}")
-            print(f"age_seconds: {age}")
-            print(f"ttl: {cfg.get('ttl')}")
-            print(f"expiry_policy: {expiry_label}")
-            workdir = container_workdir_for_cwd(cfg)
-            print(f"container_workdir: {workdir or '(none; use --repo or configure workspace_mounts)'}")
-        else:
-            print(f"not running: {name}")
-        return 0
-    if sub == "cleanup":
-        remove_container(name)
-        remove_auth_volume(cfg)
-        print(f"removed: {name}")
-        print(f"removed: {auth_volume_name(cfg)}")
-        return 0
-    if sub == "build":
-        image = str(cfg.get("image") or DEFAULT_IMAGE)
-        root = Path(__file__).resolve().parents[1]
-        proc = subprocess.run(["docker", "build", "-t", image, str(root)])
-        return proc.returncode
-    if sub == "config":
-        print(config_path())
-        return 0
-    if sub == "suggest-mounts":
-        candidates = [
-            Path("~/ghq").expanduser(),
-            Path("~/src").expanduser(),
-            Path("~/Documents/src").expanduser(),
-            Path.cwd().resolve(),
-        ]
-        seen: set[Path] = set()
-        for candidate in candidates:
-            if candidate.exists() and candidate.is_dir() and candidate not in seen:
-                seen.add(candidate)
-                print(candidate)
-        return 0
-    print(f"{APP}: unknown sandbox command: {sub}", file=sys.stderr)
-    return 2
-
-
 def main() -> int:
     args = sys.argv[1:]
-    cfg = load_config()
 
     if not args or args in (["--help"], ["help"], ["-h"]):
         print_help()
         return 0
 
-    if args[0] == "sandbox":
-        return sandbox_command(args, cfg)
-
-    if is_blocked(args, cfg):
+    if is_blocked(args):
         eprint(f"{APP}: blocked: this wrapper never exposes GitHub auth tokens on the host interface.")
         eprint(f"{APP}: command was: gh {' '.join(shlex.quote(arg) for arg in args)}")
-        eprint(f"{APP}: use GitHub web settings to revoke tokens if needed.")
         return 2
 
-    if args and args[0] == "api" and not os.environ.get("GH_SANDBOX_ALLOW_WRITE"):
+    if args[0] == "api" and not os.environ.get("GH_SANDBOX_ALLOW_WRITE"):
         is_write, reason = is_api_write(args)
         if is_write:
             eprint(f"{APP}: blocked write-likely `gh api` ({reason}).")
             eprint(f"{APP}: command was: gh {' '.join(shlex.quote(arg) for arg in args)}")
-            eprint(f"{APP}: this wrapper restricts `gh api` to GET/HEAD/OPTIONS only,")
-            eprint(f"{APP}: so it can be safely exempted from Claude Code sandbox.")
             eprint(f"{APP}: to override for one shell session, run:")
             eprint(f"{APP}:   export GH_SANDBOX_ALLOW_WRITE=1")
             return 2
 
-    name = ensure_container(cfg)
-    if needs_auth(args, cfg):
-        ensure_auth(name, cfg)
-
-    proc = docker_exec_gh(name, args, cfg)
+    token = ghtkn_token(ghtkn_app_name())
+    env = os.environ.copy()
+    env["GH_TOKEN"] = token
+    env["GITHUB_TOKEN"] = token
+    proc = subprocess.run([real_gh_bin(), *args], env=env)
     return proc.returncode
 
 

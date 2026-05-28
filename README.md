@@ -2,62 +2,81 @@
 
 [日本語](README.ja.md) | English
 
-`gh-sandbox-proxy` is a drop-in-ish `gh` wrapper that runs the official GitHub
-CLI inside a disposable Docker container.
+`gh-sandbox-proxy` is a small host-side `gh` wrapper for developers who let
+coding agents such as Claude Code, Codex, or similar tools run local shell
+commands.
 
-It is primarily for developers who let coding agents such as Claude Code,
-Codex, or similar tools run local shell commands. The aim is to keep day-to-day
-`gh` workflows usable while making host-side GitHub CLI token harvesting less
-straightforward for automated or opportunistic processes.
+It uses [`ghtkn`](https://github.com/suzuki-shunsuke/ghtkn) to obtain a GitHub
+App User Access Token for each `gh` invocation, injects that token only into the
+real GitHub CLI child process, and blocks token-printing commands on the wrapper
+interface.
+
+Despite the historical name, the current wrapper does not use Docker.
 
 ## Why
 
-Recent package supply-chain incidents have made a practical risk more visible:
-developer machines, especially agent-assisted ones, often keep GitHub CLI
-authentication in predictable local locations, and a single command can expose a
-usable token to a process running on that machine.
+Agent-assisted development increases the chance that arbitrary project scripts,
+package lifecycle hooks, or generated shell commands run on the same machine as
+your GitHub CLI setup.
 
-This project does not claim to solve endpoint compromise. Its goal is narrower:
-reduce the value of the host OS as a place to harvest GitHub CLI credentials,
-while preserving the day-to-day ergonomics of `gh` as much as possible. It is a
-friction layer, not a guarantee.
+The goal is narrow:
 
-The design target is practical:
+- keep `GH_TOKEN` out of the long-lived agent shell environment
+- keep host `gh auth token` from printing the injected token
+- preserve normal `gh` ergonomics for day-to-day commands
+- rely on GitHub App permissions and short-lived User Access Tokens for scope
+  control
 
-- keep GitHub CLI auth state out of the host OS
-- make `gh auth token` return nothing useful on the host
-- keep most `gh` command interfaces unchanged
-- expire the authenticated environment after a short TTL, default `1h`
+This is a friction layer, not a complete defense against arbitrary local code
+execution. A process that can directly run `ghtkn get "$GHTKN_APP_NAME"` may
+still obtain a valid GitHub App User Access Token.
 
-The Docker image pins GitHub CLI release asset SHA256 checksums for supported
-Linux architectures.
+## Requirements
 
-It is not a perfect defense against arbitrary local code execution. While the
-sandbox container is alive, anything that can run commands in that container can
-use the container-local GitHub CLI session.
+- macOS or another environment where `ghtkn` can access its credential store
+- GitHub CLI installed at `/opt/homebrew/bin/gh`, or set `GH_SANDBOX_REAL_GH`
+- `ghtkn` installed at `/opt/homebrew/bin/ghtkn`, or set `GH_SANDBOX_GHTKN_BIN`
+- `GHTKN_APP_NAME` set in the current environment
+
+Example:
+
+```zsh
+export GHTKN_APP_NAME=your-org/your-ghtkn-app
+```
+
+For multi-owner `ghq` layouts, use `direnv` or shell startup files at the owner
+directory level:
+
+```text
+~/ghq/github.com/your-org/.envrc
+~/ghq/github.com/your-user/.envrc
+```
+
+If a child repository has its own `.envrc`, add `source_up` to include the owner
+directory configuration.
 
 ## Setup
 
-This project does not provide a one-shot setup script. Setup is intentionally
-agent-assisted and approval-driven because it touches shell startup files,
-symlinks, Docker resources, and repository mount configuration.
-
-Use the bundled Claude Code / Codex Skill:
-
-```text
-skills/gh-sandbox-proxy-setup/SKILL.md
-```
-
-The skill first inspects shell startup files, existing `gh` resolution, and
-repository root candidates. It then asks for approval with the exact files,
-symlink, Docker resources, and `workspace_mounts` it plans to use before making
-changes.
-
-To uninstall, inspect what will be removed and then run:
+Put this repository's `bin` directory before the real GitHub CLI in PATH for
+agent shells:
 
 ```zsh
-./uninstall.sh
+export PATH="/path/to/gh-sandbox-proxy/bin:$PATH"
 ```
+
+Then verify:
+
+```zsh
+which gh
+gh api /user --jq .login
+gh auth token
+```
+
+Expected:
+
+- `which gh` resolves to this repository's `bin/gh`
+- `gh api /user` works when `GHTKN_APP_NAME` is set
+- `gh auth token` is blocked by the wrapper
 
 ## Usage
 
@@ -70,128 +89,39 @@ gh pr create -B develop -d
 gh workflow run "Deploy" --ref "$(git branch --show-current)"
 ```
 
-Commands that open a browser, such as `gh pr list -w`, are also proxied. The
-Linux `gh` process writes the target URL to a container-local hook, then the
-wrapper opens that URL on the macOS host.
-
-For tests, override the host opener:
-
-```zsh
-GH_SANDBOX_OPEN=/bin/echo gh pr list -w
-```
-
-The first authenticated command starts a container and runs:
-
-```zsh
-gh auth login -h github.com --web
-```
-
-inside the container. Follow the printed browser/device flow. The token is stored
-inside a tmpfs mount attached to the sandbox, not in the host GitHub CLI config
-or a Docker volume. The tmpfs disappears when the sandbox container exits.
-
-## Sandbox Controls
-
-```zsh
-gh sandbox status
-gh sandbox cleanup
-gh sandbox build
-gh sandbox config
-gh sandbox suggest-mounts
-```
-
-`cleanup` removes the current container immediately.
-
-## Config
-
-Default config path:
+The wrapper runs:
 
 ```text
-~/.config/gh-sandbox-proxy/config.yml
+ghtkn get "$GHTKN_APP_NAME"
+GH_TOKEN=<token> GITHUB_TOKEN=<token> /opt/homebrew/bin/gh ...
 ```
 
-Override:
-
-```zsh
-export GH_SANDBOX_CONFIG=/path/to/config.yml
-```
-
-Important fields:
-
-```yaml
-image: gh-sandbox-proxy:latest
-ttl: 1h
-active_window_enabled: false
-active_window_timezone: Asia/Tokyo
-active_window_start: "10:00"
-active_window_end: "19:00"
-auth_storage: tmpfs
-auth_tmpfs_size: 16m
-workspace_mounts:
-  - ~/ghq
-  - ~/Documents/src
-container_name: gh-sandbox-proxy
-auto_auth: true
-auth_hostname: github.com
-blocked:
-  - ["auth", "token"]
-  - ["auth", "status", "--show-token"]
-```
-
-The YAML parser is intentionally tiny. Keep the config in the same simple shape
-as `config.example.yml`.
-
-`workspace_mounts` should contain stable ancestor directories that hold your git
-repositories. The wrapper mounts these roots once and maps the host current
-directory to the matching container path when running `gh`. This lets
-repo-aware commands read `.git`, remotes, and the current branch without
-recreating the sandbox each time you `cd` between repositories.
-
-If your current directory is not under any configured workspace mount, commands
-that depend on local git context may fail. Use `--repo OWNER/REPO` for those
-commands, or add an appropriate ancestor directory to `workspace_mounts`.
-
-To keep a sandbox for a normal workday in Japan while retaining `ttl` as the
-fallback outside that window:
-
-```yaml
-ttl: 1h
-active_window_enabled: true
-active_window_timezone: Asia/Tokyo
-active_window_start: "10:00"
-active_window_end: "19:00"
-```
-
-This is enforced by the wrapper and the container lifecycle, not by a Docker
-volume TTL feature. When the sandbox starts, the wrapper calculates the lifetime
-and starts the container with `--rm`, a tmpfs auth directory, and `sleep
-<seconds>` as the main process. When sleep exits, Docker removes the container
-and the tmpfs auth data disappears.
+The token is scoped to the real `gh` child process. It is not exported into the
+parent shell.
 
 ## Security Model
 
-This wrapper protects against accidentally or casually exposing a long-lived host
-GitHub CLI token:
+The wrapper protects against accidental or casual host-side GitHub token
+exposure:
 
-- host `gh auth token` is blocked
-- host `gh auth status --show-token` is blocked
-- host `gh api` is restricted to GET / HEAD / OPTIONS so that coding-agent
-  sandboxes can exempt `gh api *` from sandboxing without also opening up
-  arbitrary GitHub API mutations. To override for one shell session, set
-  `GH_SANDBOX_ALLOW_WRITE=1`
-- official `gh` auth files are stored only in the sandbox tmpfs
-- the container exits after the configured expiry policy
-  (`ttl` by default, or the active window when enabled)
-- `gh sandbox cleanup` removes the authenticated container immediately
+- `gh auth token` is blocked
+- `gh auth status --show-token` is blocked
+- `GH_TOKEN` is not stored in the agent shell environment
+- `gh api` defaults to read-like methods only (`GET`, `HEAD`, `OPTIONS`)
 
-This wrapper does not protect against every local threat:
+To allow write-likely `gh api` calls for one shell session:
 
-- Docker administrators can inspect or exec into containers
-- commands run inside the container can use the active GitHub session
-- GitHub-issued OAuth tokens are not revoked automatically when a container is
-  deleted
-- mounted workspace directories can be read and written by commands running
-  inside the container
+```zsh
+export GH_SANDBOX_ALLOW_WRITE=1
+```
+
+The wrapper does not protect against every local threat:
+
+- a process that can run `ghtkn get "$GHTKN_APP_NAME"` can obtain a token
+- a process that bypasses PATH and calls the real `gh` directly will not use the
+  wrapper
+- GitHub App User Access Tokens are controlled by GitHub's expiration policy,
+  not by this wrapper
 
 ## License
 

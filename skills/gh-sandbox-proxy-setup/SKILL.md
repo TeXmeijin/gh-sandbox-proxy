@@ -1,20 +1,22 @@
 ---
 name: gh-sandbox-proxy-setup
-description: Interactively set up, verify, update, or uninstall gh-sandbox-proxy for Claude Code, Codex, or similar coding-agent users so GitHub CLI auth runs inside Docker and host `gh auth token` is blocked. Use when a user asks to set up the safer gh wrapper, distribute it to a machine, fix agent PATH issues for gh, or revert the wrapper.
+description: Interactively set up, verify, update, or uninstall gh-sandbox-proxy for Claude Code, Codex, or similar coding-agent users so gh uses ghtkn-backed GitHub App User Access Tokens without exposing GH_TOKEN in the agent shell. Use when a user asks to set up the safer gh wrapper, distribute it to a machine, fix agent PATH issues for gh, or revert the wrapper.
 ---
 
 # gh-sandbox-proxy setup
 
-Use this skill to set up or maintain `gh-sandbox-proxy`, a wrapper for
-developers who let Claude Code, Codex, or similar coding agents run local shell
-commands. It proxies `gh` commands into a Docker sandbox while blocking
+Use this skill to set up or maintain `gh-sandbox-proxy`, a host-side `gh`
+wrapper for developers who let Claude Code, Codex, or similar coding agents run
+local shell commands. It calls `ghtkn get "$GHTKN_APP_NAME"` and passes the
+resulting token only to the real GitHub CLI child process while blocking
 host-side token printing.
+
+The current wrapper does not use Docker.
 
 ## Setup Workflow
 
 This skill owns setup. There is no one-shot setup script. Setup must be
-interactive because it changes shell startup files, symlinks, Docker images, and
-sandbox mount configuration.
+interactive because it changes shell startup files and PATH resolution.
 
 1. Locate or clone the `gh-sandbox-proxy` repository.
 2. Inspect the current machine without making changes:
@@ -23,80 +25,84 @@ sandbox mount configuration.
 pwd
 command -v gh || true
 type gh || true
+command -v ghtkn || true
 test -f ~/.zshenv && grep -n "gh-sandbox-proxy\\|gh wrapper\\|\\.local/bin" ~/.zshenv || true
 ```
 
-3. Inspect likely repository roots and choose stable ancestor directories for
-   `workspace_mounts`. Prefer roots such as `~/ghq`, `~/Documents/src`, or
-   another directory that contains many git repositories. Do not mount `$HOME`.
-   If no safe shared root exists, propose the current project root and explain
-   the limitation.
+3. Decide where `GHTKN_APP_NAME` should come from. Prefer per-owner `direnv`
+   files for `ghq` layouts, for example:
+
+```text
+~/ghq/github.com/your-org/.envrc
+~/ghq/github.com/your-user/.envrc
+```
+
+If a child repository has its own `.envrc`, add `source_up` so the owner-level
+value is inherited.
+
 4. Present a short setup proposal before editing anything. Include:
 
-- Exact files that will be changed, usually `~/.zshenv` and
-  `~/.config/gh-sandbox-proxy/config.yml`
-- Exact symlink that will be created, usually `~/.local/bin/gh`
-- Docker image/container names that may be created
-- Proposed `workspace_mounts`
+- Exact shell startup file that will add the wrapper to PATH, usually
+  `~/.zshenv`
+- Exact `GHTKN_APP_NAME` source, such as a direnv file or shell startup file
 - Verification commands that will be run
 
-Ask for explicit approval before changing files, symlinks, or Docker resources.
+Ask for explicit approval before changing files.
 
-5. After approval, perform the setup as individual, inspectable steps:
+5. After approval, perform setup as individual, inspectable steps:
 
 ```bash
 chmod +x bin/gh
-mkdir -p ~/.local/bin ~/.config/gh-sandbox-proxy
-ln -sfn "$PWD/bin/gh" ~/.local/bin/gh
-test -f ~/.config/gh-sandbox-proxy/config.yml || cp config.example.yml ~/.config/gh-sandbox-proxy/config.yml
-docker build -t gh-sandbox-proxy:latest .
 ```
 
 6. Add or update this marker block in `~/.zshenv`, adjusted to the repository's
-   absolute `bin` path:
+   absolute `bin` path. Scope it to coding-agent shells when possible:
 
 ```zsh
 # >>> gh-sandbox-proxy PATH >>>
-# Ensure coding-agent shells use gh-sandbox-proxy before Homebrew gh.
-_gh_wrapper_bin='/absolute/path/to/gh-sandbox-proxy/bin'
-if [[ -d "$_gh_wrapper_bin" ]]; then
-  path=("$_gh_wrapper_bin" "${(@)path:#$_gh_wrapper_bin}")
-  export PATH
+# Route coding-agent `gh` calls through the ghtkn-aware wrapper before Homebrew gh.
+if [[ "$CODEX_SHELL" == "1" || "$__CFBundleIdentifier" == "com.openai.codex" ]]; then
+  _gh_wrapper_bin='/absolute/path/to/gh-sandbox-proxy/bin'
+  if [[ -d "$_gh_wrapper_bin" ]]; then
+    path=("$_gh_wrapper_bin" "${(@)path:#$_gh_wrapper_bin}")
+    export PATH
+  fi
+  unset _gh_wrapper_bin
 fi
-unset _gh_wrapper_bin
 # <<< gh-sandbox-proxy PATH <<<
 ```
 
-7. Edit `~/.config/gh-sandbox-proxy/config.yml` and set the approved roots:
+For Claude Code or a team machine that should always use the wrapper in project
+shells, a broader shell startup rule is acceptable if the user explicitly wants
+that behavior.
 
-```yaml
-workspace_mounts:
-  - ~/ghq
-  - ~/Documents/src
+7. Configure `GHTKN_APP_NAME`, for example:
+
+```zsh
+export GHTKN_APP_NAME=your-org/your-ghtkn-app
 ```
 
 8. Verify:
 
 ```bash
 type gh
-zsh -lc 'type gh; gh auth token'
+echo "$GHTKN_APP_NAME"
+gh api /user --jq .login
 gh auth token
-gh --version
-gh sandbox status
+/opt/homebrew/bin/gh auth token
 ```
 
 Expected:
 
-- `type gh` and `zsh -lc 'type gh'` both resolve the wrapper path.
+- `type gh` resolves the wrapper path in the target agent shell.
+- `GHTKN_APP_NAME` is set.
+- `gh api /user` succeeds.
 - `gh auth token` is blocked by `gh-sandbox-proxy`.
-- `gh --version` proxies to the official GitHub CLI inside Docker.
-- `gh sandbox status` shows a `container_workdir` when run under a configured
-  workspace mount.
+- Direct real `gh auth token` returns no token unless the user has separately
+  authenticated the real `gh`.
 
-If `zsh -lc` resolves the official `gh`, treat setup as failed and inspect
-`~/.zshenv`, shell startup files, and the agent process environment before
-continuing. Do not leave a machine in a split state where terminal shells use the
-wrapper but coding agents use the official `gh`.
+If the target agent shell resolves the official `gh`, treat setup as failed and
+inspect shell startup files and the agent process environment before continuing.
 
 ## Uninstall
 
@@ -107,15 +113,12 @@ Run only after telling the user what it removes:
 ```
 
 This removes wrapper symlinks, restores the backed-up `/usr/local/bin/gh` when
-present, removes gh-sandbox-proxy marker blocks from shell startup files, and
-removes the active Docker sandbox container.
+present, and removes gh-sandbox-proxy marker blocks from shell startup files.
 
 ## Safety Notes
 
-- Do not copy host `~/.config/gh` or host GitHub tokens into the sandbox.
+- Do not export `GH_TOKEN` into long-lived agent shell environments.
 - Do not bypass the wrapper by calling `gh auth token`.
-- Keep `workspace_mounts` as narrow as practical. Mounting a broad ancestor
-  improves convenience but also gives container commands read/write access to
-  that tree.
-- For complete GitHub-side OAuth revocation, instruct the user to revoke GitHub
-  CLI access in GitHub application settings. Local logout alone is not revoke.
+- Do not add broad agent permission for direct `ghtkn` execution unless the user
+  explicitly wants agents to perform setup or reauthorization themselves.
+- `ghtkn` uses GitHub App User Access Tokens; GitHub controls their expiration.
