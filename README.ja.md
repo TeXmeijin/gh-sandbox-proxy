@@ -1,8 +1,8 @@
-# gh-sandbox-proxy
+# gh-ghtkn-guard
 
 日本語 | [English](README.md)
 
-`gh-sandbox-proxy` は、Claude Code / Codex などのコーディングエージェントに
+`gh-ghtkn-guard` は、Claude Code / Codex などのコーディングエージェントに
 ローカル shell command を実行させる開発者向けの、小さな host-side `gh`
 wrapper です。
 
@@ -32,9 +32,9 @@ User Access Token を取得できます。
 
 - `ghtkn` が credential store にアクセスできる macOS などの環境
 - GitHub CLI が `/opt/homebrew/bin/gh` にあること。違う場合は
-  `GH_SANDBOX_REAL_GH` を設定する
+  `GH_GHTKN_GUARD_REAL_GH` を設定する
 - `ghtkn` が `/opt/homebrew/bin/ghtkn` にあること。違う場合は
-  `GH_SANDBOX_GHTKN_BIN` を設定する
+  `GH_GHTKN_GUARD_GHTKN_BIN` を設定する
 - 現在の環境に `GHTKN_APP_NAME` が設定されていること
 
 例:
@@ -60,7 +60,7 @@ level の `direnv` や shell startup file で設定します。
 より前に置きます。
 
 ```zsh
-export PATH="/path/to/gh-sandbox-proxy/bin:$PATH"
+export PATH="/path/to/gh-ghtkn-guard/bin:$PATH"
 ```
 
 確認:
@@ -110,7 +110,7 @@ token は本家 `gh` の子プロセスにだけ渡され、親 shell には exp
 1 shell session だけ write-likely な `gh api` を許可する場合:
 
 ```zsh
-export GH_SANDBOX_ALLOW_WRITE=1
+export GH_GHTKN_GUARD_ALLOW_WRITE=1
 ```
 
 この wrapper が防がないもの:

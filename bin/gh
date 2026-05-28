@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 
-APP = "gh-sandbox-proxy"
+APP = "gh-ghtkn-guard"
 DEFAULT_REAL_GH_BIN = "/opt/homebrew/bin/gh"
 DEFAULT_GHTKN_BIN = "/opt/homebrew/bin/ghtkn"
 
@@ -31,14 +31,14 @@ def executable(path: str) -> bool:
 
 
 def real_gh_bin() -> str:
-    gh = os.environ.get("GH_SANDBOX_REAL_GH") or DEFAULT_REAL_GH_BIN
+    gh = os.environ.get("GH_GHTKN_GUARD_REAL_GH") or DEFAULT_REAL_GH_BIN
     if executable(gh):
         return gh
     raise SystemExit(f"{APP}: real gh not found or not executable: {gh}")
 
 
 def ghtkn_bin() -> str:
-    ghtkn = os.environ.get("GH_SANDBOX_GHTKN_BIN") or DEFAULT_GHTKN_BIN
+    ghtkn = os.environ.get("GH_GHTKN_GUARD_GHTKN_BIN") or DEFAULT_GHTKN_BIN
     if executable(ghtkn):
         return ghtkn
     raise SystemExit(f"{APP}: ghtkn not found or not executable: {ghtkn}")
@@ -130,7 +130,7 @@ def ghtkn_token(app_name: str) -> str:
 
 def print_help() -> None:
     print(
-        """gh-sandbox-proxy
+        """gh-ghtkn-guard
 
 Host-side `gh` wrapper for ghtkn-backed GitHub App User Access Tokens.
 
@@ -144,9 +144,9 @@ Required environment:
   GHTKN_APP_NAME=owner/app-name
 
 Optional environment:
-  GH_SANDBOX_REAL_GH=/path/to/gh
-  GH_SANDBOX_GHTKN_BIN=/path/to/ghtkn
-  GH_SANDBOX_ALLOW_WRITE=1  allow write-likely `gh api` calls
+  GH_GHTKN_GUARD_REAL_GH=/path/to/gh
+  GH_GHTKN_GUARD_GHTKN_BIN=/path/to/ghtkn
+  GH_GHTKN_GUARD_ALLOW_WRITE=1  allow write-likely `gh api` calls
 """
     )
 
@@ -163,13 +163,13 @@ def main() -> int:
         eprint(f"{APP}: command was: gh {' '.join(shlex.quote(arg) for arg in args)}")
         return 2
 
-    if args[0] == "api" and not os.environ.get("GH_SANDBOX_ALLOW_WRITE"):
+    if args[0] == "api" and not os.environ.get("GH_GHTKN_GUARD_ALLOW_WRITE"):
         is_write, reason = is_api_write(args)
         if is_write:
             eprint(f"{APP}: blocked write-likely `gh api` ({reason}).")
             eprint(f"{APP}: command was: gh {' '.join(shlex.quote(arg) for arg in args)}")
             eprint(f"{APP}: to override for one shell session, run:")
-            eprint(f"{APP}:   export GH_SANDBOX_ALLOW_WRITE=1")
+            eprint(f"{APP}:   export GH_GHTKN_GUARD_ALLOW_WRITE=1")
             return 2
 
     token = ghtkn_token(ghtkn_app_name())

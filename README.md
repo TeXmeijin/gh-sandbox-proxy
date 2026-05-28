@@ -1,8 +1,8 @@
-# gh-sandbox-proxy
+# gh-ghtkn-guard
 
 [日本語](README.ja.md) | English
 
-`gh-sandbox-proxy` is a small host-side `gh` wrapper for developers who let
+`gh-ghtkn-guard` is a small host-side `gh` wrapper for developers who let
 coding agents such as Claude Code, Codex, or similar tools run local shell
 commands.
 
@@ -32,8 +32,8 @@ still obtain a valid GitHub App User Access Token.
 ## Requirements
 
 - macOS or another environment where `ghtkn` can access its credential store
-- GitHub CLI installed at `/opt/homebrew/bin/gh`, or set `GH_SANDBOX_REAL_GH`
-- `ghtkn` installed at `/opt/homebrew/bin/ghtkn`, or set `GH_SANDBOX_GHTKN_BIN`
+- GitHub CLI installed at `/opt/homebrew/bin/gh`, or set `GH_GHTKN_GUARD_REAL_GH`
+- `ghtkn` installed at `/opt/homebrew/bin/ghtkn`, or set `GH_GHTKN_GUARD_GHTKN_BIN`
 - `GHTKN_APP_NAME` set in the current environment
 
 Example:
@@ -59,7 +59,7 @@ Put this repository's `bin` directory before the real GitHub CLI in PATH for
 agent shells:
 
 ```zsh
-export PATH="/path/to/gh-sandbox-proxy/bin:$PATH"
+export PATH="/path/to/gh-ghtkn-guard/bin:$PATH"
 ```
 
 Then verify:
@@ -110,7 +110,7 @@ exposure:
 To allow write-likely `gh api` calls for one shell session:
 
 ```zsh
-export GH_SANDBOX_ALLOW_WRITE=1
+export GH_GHTKN_GUARD_ALLOW_WRITE=1
 ```
 
 The wrapper does not protect against every local threat:

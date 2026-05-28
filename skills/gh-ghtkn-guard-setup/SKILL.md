@@ -1,11 +1,11 @@
 ---
-name: gh-sandbox-proxy-setup
-description: Interactively set up, verify, update, or uninstall gh-sandbox-proxy for Claude Code, Codex, or similar coding-agent users so gh uses ghtkn-backed GitHub App User Access Tokens without exposing GH_TOKEN in the agent shell. Use when a user asks to set up the safer gh wrapper, distribute it to a machine, fix agent PATH issues for gh, or revert the wrapper.
+name: gh-ghtkn-guard-setup
+description: Interactively set up, verify, update, or uninstall gh-ghtkn-guard for Claude Code, Codex, or similar coding-agent users so gh uses ghtkn-backed GitHub App User Access Tokens without exposing GH_TOKEN in the agent shell. Use when a user asks to set up the safer gh wrapper, distribute it to a machine, fix agent PATH issues for gh, or revert the wrapper.
 ---
 
-# gh-sandbox-proxy setup
+# gh-ghtkn-guard setup
 
-Use this skill to set up or maintain `gh-sandbox-proxy`, a host-side `gh`
+Use this skill to set up or maintain `gh-ghtkn-guard`, a host-side `gh`
 wrapper for developers who let Claude Code, Codex, or similar coding agents run
 local shell commands. It calls `ghtkn get "$GHTKN_APP_NAME"` and passes the
 resulting token only to the real GitHub CLI child process while blocking
@@ -16,7 +16,7 @@ host-side token printing.
 This skill owns setup. There is no one-shot setup script. Setup must be
 interactive because it changes shell startup files and PATH resolution.
 
-1. Locate or clone the `gh-sandbox-proxy` repository.
+1. Locate or clone the `gh-ghtkn-guard` repository.
 2. Inspect the current machine without making changes:
 
 ```bash
@@ -24,7 +24,7 @@ pwd
 command -v gh || true
 type gh || true
 command -v ghtkn || true
-test -f ~/.zshenv && grep -n "gh-sandbox-proxy\\|gh wrapper\\|\\.local/bin" ~/.zshenv || true
+test -f ~/.zshenv && grep -n "gh-ghtkn-guard\\|gh wrapper\\|\\.local/bin" ~/.zshenv || true
 ```
 
 3. Decide where `GHTKN_APP_NAME` should come from. Prefer per-owner `direnv`
@@ -57,17 +57,17 @@ chmod +x bin/gh
    absolute `bin` path. Scope it to coding-agent shells when possible:
 
 ```zsh
-# >>> gh-sandbox-proxy PATH >>>
+# >>> gh-ghtkn-guard PATH >>>
 # Route coding-agent `gh` calls through the ghtkn-aware wrapper before Homebrew gh.
 if [[ "$CODEX_SHELL" == "1" || "$__CFBundleIdentifier" == "com.openai.codex" ]]; then
-  _gh_wrapper_bin='/absolute/path/to/gh-sandbox-proxy/bin'
+  _gh_wrapper_bin='/absolute/path/to/gh-ghtkn-guard/bin'
   if [[ -d "$_gh_wrapper_bin" ]]; then
     path=("$_gh_wrapper_bin" "${(@)path:#$_gh_wrapper_bin}")
     export PATH
   fi
   unset _gh_wrapper_bin
 fi
-# <<< gh-sandbox-proxy PATH <<<
+# <<< gh-ghtkn-guard PATH <<<
 ```
 
 For Claude Code or a team machine that should always use the wrapper in project
@@ -95,7 +95,7 @@ Expected:
 - `type gh` resolves the wrapper path in the target agent shell.
 - `GHTKN_APP_NAME` is set.
 - `gh api /user` succeeds.
-- `gh auth token` is blocked by `gh-sandbox-proxy`.
+- `gh auth token` is blocked by `gh-ghtkn-guard`.
 - Direct real `gh auth token` returns no token unless the user has separately
   authenticated the real `gh`.
 
@@ -111,7 +111,7 @@ Run only after telling the user what it removes:
 ```
 
 This removes wrapper symlinks, restores the backed-up `/usr/local/bin/gh` when
-present, and removes gh-sandbox-proxy marker blocks from shell startup files.
+present, and removes gh-ghtkn-guard marker blocks from shell startup files.
 
 ## Safety Notes
 

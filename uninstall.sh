@@ -3,11 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WRAPPER_BIN="$ROOT_DIR/bin/gh"
-LINK_DIR="${GH_SANDBOX_LINK_DIR:-$HOME/.local/bin}"
+LINK_DIR="${GH_GHTKN_GUARD_LINK_DIR:-$HOME/.local/bin}"
 LINK_PATH="$LINK_DIR/gh"
-SYSTEM_LINK_PATH="${GH_SANDBOX_SYSTEM_LINK_PATH:-/usr/local/bin/gh}"
-SYSTEM_BACKUP_PATH="${SYSTEM_LINK_PATH}.original-before-gh-sandbox-proxy"
-ZSHENV_PATH="${GH_SANDBOX_ZSHENV_PATH:-$HOME/.zshenv}"
+SYSTEM_LINK_PATH="${GH_GHTKN_GUARD_SYSTEM_LINK_PATH:-/usr/local/bin/gh}"
+SYSTEM_BACKUP_PATH="${SYSTEM_LINK_PATH}.original-before-gh-ghtkn-guard"
+ZSHENV_PATH="${GH_GHTKN_GUARD_ZSHENV_PATH:-$HOME/.zshenv}"
 ZPROFILE_PATH="$HOME/.zprofile"
 ZSHRC_PATH="$HOME/.zshrc"
 
@@ -33,8 +33,8 @@ import os
 from pathlib import Path
 
 target = Path(os.environ["ZSH_TARGET"])
-begin = "# >>> gh-sandbox-proxy PATH >>>"
-end = "# <<< gh-sandbox-proxy PATH <<<"
+begin = "# >>> gh-ghtkn-guard PATH >>>"
+end = "# <<< gh-ghtkn-guard PATH <<<"
 text = target.read_text()
 if begin in text and end in text:
     before, rest = text.split(begin, 1)
