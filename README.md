@@ -97,6 +97,15 @@ GH_TOKEN=<token> GITHUB_TOKEN=<token> /opt/homebrew/bin/gh ...
 The token is scoped to the real `gh` child process. It is not exported into the
 parent shell.
 
+If `ghtkn` needs interactive GitHub Device Flow authorization, the wrapper does
+not stream `ghtkn` stdout because stdout is reserved for the token. Instead it
+times out and prints an actionable error. Run the authorization once in a normal
+interactive terminal, then retry the `gh` command:
+
+```zsh
+ghtkn get "$GHTKN_APP_NAME" >/dev/null
+```
+
 ## Security Model
 
 The wrapper protects against accidental or casual host-side GitHub token
@@ -111,6 +120,13 @@ To allow write-likely `gh api` calls for one shell session:
 
 ```zsh
 export GH_GHTKN_GUARD_ALLOW_WRITE=1
+```
+
+To change how long the wrapper waits for `ghtkn get` before assuming
+interactive authorization is required:
+
+```zsh
+export GH_GHTKN_GUARD_GHTKN_TIMEOUT_SECONDS=20
 ```
 
 The wrapper does not protect against every local threat:

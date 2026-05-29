@@ -97,6 +97,15 @@ GH_TOKEN=<token> GITHUB_TOKEN=<token> /opt/homebrew/bin/gh ...
 
 token は本家 `gh` の子プロセスにだけ渡され、親 shell には export されません。
 
+`ghtkn` が GitHub Device Flow の対話認可を必要とする場合、wrapper は
+`ghtkn` の stdout を stream しません。stdout は token 取得用に予約しているためです。
+代わりに timeout して、実行すべき command を stderr に出して終了します。通常の対話
+terminal で一度認可してから、`gh` command を再実行します。
+
+```zsh
+ghtkn get "$GHTKN_APP_NAME" >/dev/null
+```
+
 ## セキュリティモデル
 
 この wrapper は、host 側での GitHub token の偶発的・安易な露出を減らします。
@@ -111,6 +120,12 @@ token は本家 `gh` の子プロセスにだけ渡され、親 shell には exp
 
 ```zsh
 export GH_GHTKN_GUARD_ALLOW_WRITE=1
+```
+
+`ghtkn get` を待つ秒数を変える場合:
+
+```zsh
+export GH_GHTKN_GUARD_GHTKN_TIMEOUT_SECONDS=20
 ```
 
 この wrapper が防がないもの:
